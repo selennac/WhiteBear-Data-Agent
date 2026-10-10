@@ -1,0 +1,38 @@
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+
+# Frontend
+node_modules/
+.vite/
+coverage/
+playwright-report/
+test-results/
+
+# Local data and tools
+.tools/
+*.log
+demo/generated/*
+!demo/generated/.gitkeep
+evals/reports/*
+!evals/reports/.gitkeep
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
