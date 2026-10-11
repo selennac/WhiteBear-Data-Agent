@@ -4,6 +4,7 @@ import json
 from datetime import datetime
 from typing import Any
 
+import httpx
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from openai import APITimeoutError, AuthenticationError, RateLimitError
@@ -35,7 +36,7 @@ class ModelError(ValueError):
         self.code = code
 
 
-def generate_draft(
+async def generate_draft(
     settings: Settings,
     question: str,
     schema: DatasourceSchema,
@@ -55,21 +56,29 @@ def generate_draft(
         "diagnostic": diagnostic,
         "output_schema": QueryDraft.model_json_schema(),
     }
+    async with httpx.AsyncClient(timeout=60) as client:
+        return await invoke_draft(settings, context, client)
+
+
+async def invoke_draft(
+    settings: Settings, context: dict[str, Any], client: httpx.AsyncClient
+) -> tuple[QueryDraft, dict[str, int]]:
     model = ChatOpenAI(
         model=settings.qwen_model,
         base_url=settings.qwen_base_url,
         api_key=settings.qwen_api_key,
+        http_async_client=client,
         temperature=0,
         timeout=60,
         max_retries=0,
         max_completion_tokens=4096,
     )
     try:
-        response = model.with_structured_output(
+        response = await model.with_structured_output(
             QueryDraft,
             method="json_mode",
             include_raw=True,
-        ).invoke(
+        ).ainvoke(
             [
                 SystemMessage(content=SYSTEM_PROMPT),
                 HumanMessage(content=json.dumps(context, ensure_ascii=False)),

@@ -2,7 +2,6 @@
 # Install from backend/: python -m pip install --upgrade -r requirements-dev.txt
 -r requirements.txt
 
-httpx
 mypy
 pytest
 ruff

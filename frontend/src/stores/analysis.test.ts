@@ -2,19 +2,21 @@ import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  cancelRun,
   createConversation,
   getConversation,
   getConversations,
-  sendQuestion,
+  streamQuestion,
 } from '../services/api'
 import type { AnalysisRun, ConversationSummary } from '../types/api'
 import { useAnalysisStore } from './analysis'
 
 vi.mock('../services/api', () => ({
+  cancelRun: vi.fn(),
   createConversation: vi.fn(),
   getConversation: vi.fn(),
   getConversations: vi.fn(),
-  sendQuestion: vi.fn(),
+  streamQuestion: vi.fn(),
 }))
 const conversation: ConversationSummary = {
   id: 'conversation-1',
@@ -38,12 +40,18 @@ const run: AnalysisRun = {
   },
 }
 
-describe('single-question analysis state', () => {
+describe('streaming analysis state', () => {
   beforeEach(() => {
     vi.resetAllMocks()
     setActivePinia(createPinia())
     vi.mocked(createConversation).mockResolvedValue({ ...conversation })
-    vi.mocked(sendQuestion).mockResolvedValue(run)
+    let sequence = 0
+    vi.mocked(streamQuestion).mockImplementation(async (_id, question, receive) => {
+      const result = { ...run, id: 'run-' + ++sequence, question }
+      receive({ type: 'run_started', run_id: result.id, run: { ...result, status: 'running' } })
+      receive({ type: 'run_completed', run_id: result.id, run: result })
+      return result
+    })
   })
 
   it('creates one conversation and preserves returned results', async () => {
@@ -51,15 +59,21 @@ describe('single-question analysis state', () => {
     await state.submit(' 订单数 ')
     await state.submit('销售额')
     expect(createConversation).toHaveBeenCalledTimes(1)
-    expect(sendQuestion).toHaveBeenNthCalledWith(1, conversation.id, '订单数')
-    expect(state.selectedRun).toEqual(run)
+    expect(streamQuestion).toHaveBeenNthCalledWith(
+      1,
+      conversation.id,
+      '订单数',
+      expect.any(Function),
+      expect.any(AbortSignal),
+    )
+    expect(state.selectedRun).toEqual({ ...run, id: 'run-2', question: '销售额' })
     expect(state.runs).toHaveLength(2)
     expect(state.conversations[0]?.title).toBe('订单数')
   })
 
   it('does not duplicate submissions or switch history while running', async () => {
     let finish!: (value: AnalysisRun) => void
-    vi.mocked(sendQuestion).mockImplementation(
+    vi.mocked(streamQuestion).mockImplementation(
       () =>
         new Promise((resolve) => {
           finish = resolve
@@ -67,7 +81,7 @@ describe('single-question analysis state', () => {
     )
     const state = useAnalysisStore()
     const pending = state.submit('订单数')
-    await vi.waitFor(() => expect(sendQuestion).toHaveBeenCalledOnce())
+    await vi.waitFor(() => expect(streamQuestion).toHaveBeenCalledOnce())
     await state.submit('另一个问题')
     await state.selectConversation('other')
     state.newConversation()
@@ -81,7 +95,7 @@ describe('single-question analysis state', () => {
   it('keeps prior results when the next request fails and can recover', async () => {
     const state = useAnalysisStore()
     await state.submit('订单数')
-    vi.mocked(sendQuestion).mockRejectedValueOnce(new Error('模型未配置'))
+    vi.mocked(streamQuestion).mockRejectedValueOnce(new Error('模型未配置'))
     await state.submit('销售额')
     expect(state.selectedRun).toEqual(run)
     expect(state.error).toBe('模型未配置')
@@ -99,5 +113,115 @@ describe('single-question analysis state', () => {
     state.newConversation()
     expect(state.runs).toEqual([])
     expect(state.conversationId).toBeNull()
+  })
+
+  it('updates a running step in place and shows SQL before completion', async () => {
+    let finish!: (value: AnalysisRun) => void
+    vi.mocked(streamQuestion).mockImplementation((_id, _question, receive) => {
+      receive({
+        type: 'run_started',
+        run_id: run.id,
+        run: { ...run, status: 'running', result: null, steps: [] },
+      })
+      receive({
+        type: 'node_status',
+        run_id: run.id,
+        step: {
+          node: 'generate_query',
+          status: 'running',
+          attempt: 1,
+          elapsed_ms: 0,
+        },
+      })
+      receive({ type: 'sql', run_id: run.id, draft: { action: 'query', sql: 'SELECT 12' } })
+      receive({
+        type: 'node_status',
+        run_id: run.id,
+        step: {
+          node: 'generate_query',
+          status: 'succeeded',
+          attempt: 1,
+          elapsed_ms: 10,
+        },
+      })
+      return new Promise((resolve) => {
+        finish = resolve
+      })
+    })
+    const state = useAnalysisStore()
+    const pending = state.submit('订单数')
+    await vi.waitFor(() => expect(state.selectedRun?.draft?.sql).toBe('SELECT 12'))
+    expect(state.runs).toHaveLength(1)
+    expect(state.selectedRun?.steps).toHaveLength(1)
+    expect(state.selectedRun?.status).toBe('running')
+    finish(run)
+    await pending
+    expect(state.runs).toHaveLength(1)
+    expect(state.busy).toBe(false)
+  })
+
+  it('waits for the persisted cancellation then permits the next question', async () => {
+    let finish!: (value: AnalysisRun) => void
+    const cancelled: AnalysisRun = { ...run, status: 'cancelled', result: null }
+    vi.mocked(streamQuestion).mockImplementationOnce((_id, _question, receive) => {
+      receive({
+        type: 'run_started',
+        run_id: run.id,
+        run: { ...run, status: 'running', result: null },
+      })
+      return new Promise((resolve) => {
+        finish = resolve
+      })
+    })
+    vi.mocked(cancelRun).mockImplementationOnce(async () => {
+      finish(cancelled)
+      return cancelled
+    })
+    const state = useAnalysisStore()
+    const pending = state.submit('订单数')
+    await vi.waitFor(() => expect(state.selectedRun?.status).toBe('running'))
+    await state.stop()
+    await pending
+    expect(cancelRun).toHaveBeenCalledWith(run.id)
+    expect(state.selectedRun?.status).toBe('cancelled')
+    expect(state.busy).toBe(false)
+    expect(state.error).toBe('')
+    await state.submit('销售额')
+    expect(state.selectedRun?.status).toBe('succeeded')
+  })
+
+  it('recovers the saved status after a stream disconnect', async () => {
+    const cancelled: AnalysisRun = { ...run, status: 'cancelled', result: null }
+    vi.mocked(streamQuestion).mockImplementationOnce(async (_id, _question, receive) => {
+      receive({ type: 'run_started', run_id: run.id, run: { ...run, status: 'running' } })
+      throw new Error('disconnected')
+    })
+    vi.mocked(cancelRun).mockResolvedValueOnce(cancelled)
+    const state = useAnalysisStore()
+    await state.submit('订单数')
+    expect(state.selectedRun).toEqual(cancelled)
+    expect(state.error).toBe('')
+    expect(state.busy).toBe(false)
+  })
+
+  it('keeps an unconfirmed stop actionable when the cancel request fails', async () => {
+    let finish!: (value: AnalysisRun) => void
+    vi.mocked(streamQuestion).mockImplementationOnce((_id, _question, receive) => {
+      receive({ type: 'run_started', run_id: run.id, run: { ...run, status: 'running' } })
+      return new Promise((resolve) => {
+        finish = resolve
+      })
+    })
+    vi.mocked(cancelRun).mockRejectedValueOnce(new Error('应用数据库暂不可用'))
+    const state = useAnalysisStore()
+    const pending = state.submit('订单数')
+    await vi.waitFor(() => expect(state.selectedRun?.status).toBe('running'))
+    await state.stop()
+    expect(state.sending).toBe(true)
+    expect(state.selectedRun?.status).toBe('running')
+    expect(state.stopping).toBe(false)
+    expect(state.error).toContain('应用数据库')
+    finish(run)
+    await pending
   })
 })

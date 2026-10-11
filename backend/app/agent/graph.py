@@ -1,16 +1,20 @@
-"""Single-question graph with bounded repair and terminal safety failures."""
+"""Single-question graph with incremental progress and bounded repair."""
 
+import asyncio
+from collections.abc import Awaitable, Callable
 from time import perf_counter
-from typing import Literal, TypedDict
+from typing import TypedDict
 
+from langchain_core.runnables import RunnableLambda
 from langgraph.graph import END, START, StateGraph
 
+from app.core.async_work import run_blocking
 from app.core.config import Settings
 from app.datasources.execution import QueryExecutionError, execute_query
 from app.datasources.validation import SQLValidationError, validate_sql
 from app.db.connections import DatabaseConfigurationError
 from app.llm.query import ModelError, generate_draft
-from app.schemas.analysis import AnalysisRun, QueryDraft, RunStep
+from app.schemas.analysis import AnalysisEvent, AnalysisRun, QueryDraft, RunStep
 from app.schemas.datasource import DatasourceSchema
 from app.services.datasource import get_schema
 
@@ -23,53 +27,84 @@ class AnalysisState(TypedDict):
     diagnostic: str
 
 
+Node = Callable[[AnalysisState], Awaitable[dict[str, object]]]
+EventSink = Callable[[AnalysisEvent], None]
+
+
 def fail(run: AnalysisRun, code: str, message: str) -> None:
     run.status = "failed"
     run.error_code = code
     run.error_message = message
 
 
-def step(
-    state: AnalysisState,
-    node: str,
-    start: float,
-    status: Literal["succeeded", "failed"] = "succeeded",
-    detail: str = "",
-) -> None:
-    state["run"].steps.append(
-        RunStep(
-            node=node,
-            status=status,
-            attempt=state["attempt"],
-            elapsed_ms=round((perf_counter() - start) * 1000),
-            detail=detail,
+async def run_graph(
+    settings: Settings, run: AnalysisRun, emit: EventSink = lambda event: None
+) -> AnalysisRun:
+    def publish_step(item: RunStep) -> None:
+        emit(
+            AnalysisEvent(
+                type="node_status",
+                run_id=run.id,
+                step=item.model_copy(deep=True),
+                schema_version=run.schema_version,
+                token_usage=dict(run.token_usage),
+            )
         )
-    )
 
+    def publish_draft() -> None:
+        emit(AnalysisEvent(type="sql", run_id=run.id, draft=run.draft))
 
-def run_graph(settings: Settings, run: AnalysisRun) -> AnalysisRun:
-    def load(state: AnalysisState) -> dict[str, object]:
-        start = perf_counter()
+    def tracked(name: str) -> Callable[[Node], Node]:
+        def decorate(action: Node) -> Node:
+            async def call(state: AnalysisState) -> dict[str, object]:
+                if name == "generate_query":
+                    state["attempt"] += 1
+                start = perf_counter()
+                item = RunStep(node=name, status="running", attempt=state["attempt"], elapsed_ms=0)
+                run.steps.append(item)
+                publish_step(item)
+                try:
+                    await asyncio.sleep(0)
+                    update = await action(state)
+                    diagnostic = str(update.get("diagnostic", ""))
+                    item.status = "failed" if diagnostic or run.status == "failed" else "succeeded"
+                    item.detail = diagnostic or run.error_message
+                    return update
+                except asyncio.CancelledError:
+                    item.status = "cancelled"
+                    item.detail = "分析已停止。"
+                    raise
+                except Exception:
+                    item.status = "failed"
+                    item.detail = "分析未能完成，请检查配置后重试。"
+                    raise
+                finally:
+                    item.elapsed_ms = round((perf_counter() - start) * 1000)
+                    publish_step(item)
+
+            return call
+
+        return decorate
+
+    @tracked("load_context")
+    async def load(state: AnalysisState) -> dict[str, object]:
         try:
-            schema = get_schema(settings)
+            schema = await run_blocking(get_schema, settings)
             run.schema_version = schema.schema_version
-            step(state, "load_context", start)
             return {"schema": schema}
         except DatabaseConfigurationError as error:
             message = str(error)
         except Exception:
             message = "数据结构暂不可用，请检查数据库连接并运行 db init。"
         fail(run, "datasource_unavailable", message)
-        step(state, "load_context", start, "failed", message)
         return {}
 
-    def generate(state: AnalysisState) -> dict[str, object]:
+    @tracked("generate_query")
+    async def generate(state: AnalysisState) -> dict[str, object]:
         schema = state["schema"]
         assert schema is not None
-        state["attempt"] += 1
-        start = perf_counter()
         try:
-            draft, usage = generate_draft(
+            draft, usage = await generate_draft(
                 settings,
                 run.question,
                 schema,
@@ -85,41 +120,38 @@ def run_graph(settings: Settings, run: AnalysisRun) -> AnalysisRun:
                     "model_output_invalid", "模型引用了未定义的指标，请依据业务口径修正。"
                 )
             run.draft = draft
-            step(state, "generate_query", start)
+            publish_draft()
             if draft.action == "clarify":
                 run.status = "clarification_required"
             return {"draft": draft, "attempt": state["attempt"], "diagnostic": ""}
         except ModelError as error:
-            step(state, "generate_query", start, "failed", str(error))
             if error.code != "model_output_invalid" or state["attempt"] >= 3:
                 fail(run, error.code, str(error))
             return {"attempt": state["attempt"], "diagnostic": str(error)}
 
-    def validate(state: AnalysisState) -> dict[str, object]:
+    @tracked("validate_sql")
+    async def validate(state: AnalysisState) -> dict[str, object]:
         schema, draft = state["schema"], state["draft"]
         assert schema is not None and draft is not None
-        start = perf_counter()
         try:
             draft.sql = validate_sql(draft.sql, schema)
-            step(state, "validate_sql", start)
+            publish_draft()
             return {"draft": draft, "diagnostic": ""}
         except SQLValidationError as error:
-            step(state, "validate_sql", start, "failed", str(error))
             if not error.retryable or state["attempt"] >= 3:
                 fail(run, "invalid_sql" if error.retryable else "unsafe_sql", str(error))
             return {"diagnostic": str(error)}
 
-    def execute(state: AnalysisState) -> dict[str, object]:
+    @tracked("execute_query")
+    async def execute(state: AnalysisState) -> dict[str, object]:
         schema, draft = state["schema"], state["draft"]
         assert schema is not None and draft is not None
-        start = perf_counter()
         try:
-            run.result = execute_query(settings, draft.sql, schema)
+            run.result = await run_blocking(execute_query, settings, draft.sql, schema)
             run.status = "succeeded"
-            step(state, "execute_query", start)
+            emit(AnalysisEvent(type="result", run_id=run.id, result=run.result))
             return {"diagnostic": ""}
         except QueryExecutionError as error:
-            step(state, "execute_query", start, "failed", str(error))
             if not error.retryable or state["attempt"] >= 3:
                 fail(run, error.code, str(error))
             return {"diagnostic": str(error)}
@@ -135,10 +167,10 @@ def run_graph(settings: Settings, run: AnalysisRun) -> AnalysisRun:
         return "generate" if state["diagnostic"] else "execute"
 
     graph = StateGraph(AnalysisState)
-    graph.add_node("load", load)
-    graph.add_node("generate", generate)
-    graph.add_node("validate", validate)
-    graph.add_node("execute", execute)
+    graph.add_node("load", RunnableLambda(load))
+    graph.add_node("generate", RunnableLambda(generate))
+    graph.add_node("validate", RunnableLambda(validate))
+    graph.add_node("execute", RunnableLambda(execute))
     graph.add_edge(START, "load")
     graph.add_conditional_edges("load", lambda state: END if run.status == "failed" else "generate")
     graph.add_conditional_edges("generate", after_generate)
@@ -146,7 +178,7 @@ def run_graph(settings: Settings, run: AnalysisRun) -> AnalysisRun:
     graph.add_conditional_edges(
         "execute", lambda state: END if run.status != "running" else "generate"
     )
-    graph.compile().invoke(
+    await graph.compile().ainvoke(
         {
             "run": run,
             "schema": None,

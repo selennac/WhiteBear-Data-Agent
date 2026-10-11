@@ -9,6 +9,7 @@ from typing import Any
 
 import psycopg
 
+from app.core.async_work import current_work
 from app.core.config import Settings
 from app.datasources.validation import validate_sql
 from app.db.connections import connection_string, parse_url
@@ -39,12 +40,17 @@ def serialize_cell(value: Any) -> Cell:
 
 
 def execute_query(settings: Settings, sql: str, schema: DatasourceSchema) -> QueryResult:
+    work = current_work.get()
+    if work is not None:
+        work.check()
     # Validate again at the execution boundary, including when called outside the Agent.
     validated = validate_sql(sql, schema)
     url = parse_url(settings.business_readonly_database_url, "BUSINESS_READONLY_DATABASE_URL")
     start = perf_counter()
     try:
         with psycopg.connect(connection_string(url), connect_timeout=5) as connection:
+            if work is not None:
+                work.register(connection)
             connection.execute("SET TRANSACTION READ ONLY")
             connection.execute("SET LOCAL statement_timeout = '10s'")
             connection.execute("SET LOCAL lock_timeout = '2s'")
@@ -64,6 +70,8 @@ def execute_query(settings: Settings, sql: str, schema: DatasourceSchema) -> Que
                 size = 0
                 truncated = False
                 for raw in cursor:
+                    if work is not None:
+                        work.check()
                     if len(rows) == MAX_ROWS:
                         truncated = True
                         break

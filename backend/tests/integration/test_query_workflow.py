@@ -1,9 +1,12 @@
+import asyncio
 from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
 from uuid import UUID
 
+import httpx
+import psycopg
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
@@ -11,12 +14,15 @@ from sqlalchemy import text
 
 from app.business.generator import GenerationOptions, generate_dataset
 from app.business.storage import store_dataset
+from app.core.async_work import run_blocking
 from app.core.config import Settings
 from app.datasources.execution import QueryExecutionError, execute_query
-from app.db.connections import engine_for
+from app.db.connections import connection_string, engine_for, parse_url
 from app.main import create_app
-from app.schemas.analysis import QueryDraft
+from app.repositories.analysis import create_conversation
+from app.schemas.analysis import ConversationCreate, QueryDraft
 from app.services.datasource import get_schema
+from app.services.streaming import RunManager
 
 
 @pytest.fixture(scope="module")
@@ -153,3 +159,89 @@ def test_unsafe_sql_and_clarification_are_saved(query_settings: Settings, tmp_pa
             assert run["status"] == status
             assert client.get(f"/api/v1/runs/{run['id']}").json()["status"] == status
             execute.assert_not_called()
+
+
+def test_cancel_interrupts_postgres_and_closes_reader_connection(query_settings: Settings) -> None:
+    async def scenario() -> None:
+        schema = await run_blocking(get_schema, query_settings)
+        business = parse_url(
+            query_settings.business_readonly_database_url, "BUSINESS_READONLY_DATABASE_URL"
+        )
+        admin = parse_url(query_settings.admin_database_url, "ADMIN_DATABASE_URL")
+        with psycopg.connect(connection_string(admin), autocommit=True) as probe:
+            task = asyncio.create_task(
+                run_blocking(
+                    execute_query,
+                    query_settings,
+                    "SELECT COUNT(*) FROM orders a CROSS JOIN orders b "
+                    "CROSS JOIN orders c CROSS JOIN orders d",
+                    schema,
+                )
+            )
+
+            def active_count() -> int:
+                return probe.execute(
+                    "SELECT count(*) FROM pg_stat_activity WHERE datname = %s AND usename = %s",
+                    (business.database, business.username),
+                ).fetchone()[0]
+
+            async def wait_until_query() -> None:
+                while not await asyncio.to_thread(active_count):
+                    await asyncio.sleep(0.02)
+
+            try:
+                await asyncio.wait_for(wait_until_query(), 5)
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.wait_for(task, 3)
+                assert await asyncio.to_thread(active_count) == 0
+            finally:
+                if not task.done():
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+        assert (
+            await run_blocking(execute_query, query_settings, "SELECT COUNT(*) FROM orders", schema)
+        ).rows == [[1500]]
+
+    asyncio.run(scenario())
+
+
+def test_cancel_api_persists_history_across_app_instances(
+    query_settings: Settings, tmp_path: Path
+) -> None:
+    async def scenario() -> tuple[str, str]:
+        model_entered = asyncio.Event()
+
+        async def slow_model(*args, **kwargs):
+            model_entered.set()
+            await asyncio.Event().wait()
+
+        settings = query_settings.model_copy(update={"frontend_dist": tmp_path})
+        app = create_app(settings)
+        manager: RunManager = app.state.runs
+        conversation = await run_blocking(create_conversation, settings, ConversationCreate())
+        with patch("app.agent.graph.generate_draft", side_effect=slow_model):
+            active = await manager.start(settings, conversation.id, "订单数")
+            await asyncio.wait_for(model_entered.wait(), 10)
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                response = await client.post(f"/api/v1/runs/{active.run.id}/cancel")
+                assert response.status_code == 200, response.text
+                saved = response.json()
+                assert saved["status"] == "cancelled"
+                assert saved["completed_at"]
+                assert saved["steps"][-1]["status"] == "cancelled"
+                assert (await client.post(f"/api/v1/runs/{active.run.id}/cancel")).json() == saved
+            assert not manager.active
+        return str(conversation.id), str(active.run.id)
+
+    conversation_id, run_id = asyncio.run(scenario())
+    with TestClient(
+        create_app(query_settings.model_copy(update={"frontend_dist": tmp_path}))
+    ) as client:
+        assert client.get(f"/api/v1/runs/{run_id}").json()["status"] == "cancelled"
+        assert (
+            client.get(f"/api/v1/conversations/{conversation_id}").json()["runs"][-1]["status"]
+            == "cancelled"
+        )

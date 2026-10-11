@@ -1,4 +1,6 @@
+import { readAnalysisStream } from './stream'
 import type {
+  AnalysisEvent,
   AnalysisRun,
   ConversationDetail,
   ConversationSummary,
@@ -40,8 +42,8 @@ export const patchMetadata = (patch: MetadataPatch) =>
 
 export const getConversations = (offset = 0) =>
   request<ConversationSummary[]>(`/conversations?offset=${offset}`)
-export const createConversation = () =>
-  request<ConversationSummary>('/conversations', { method: 'POST', body: '{}' })
+export const createConversation = (signal?: AbortSignal) =>
+  request<ConversationSummary>('/conversations', { method: 'POST', body: '{}', signal })
 export const getConversation = (id: string) => request<ConversationDetail>(`/conversations/${id}`)
 export const sendQuestion = (id: string, question: string) =>
   request<AnalysisRun>(
@@ -75,4 +77,33 @@ export async function getHealth(): Promise<HealthResponse> {
   }
 
   return { status: payload.status, app_name: payload.app_name, version: payload.version }
+}
+
+export const cancelRun = (id: string) =>
+  request<AnalysisRun>('/runs/' + id + '/cancel', { method: 'POST' })
+
+export async function streamQuestion(
+  id: string,
+  question: string,
+  onEvent: (event: AnalysisEvent) => void,
+  signal: AbortSignal,
+): Promise<AnalysisRun> {
+  const response = await fetch('/api/v1/conversations/' + id + '/messages/stream', {
+    method: 'POST',
+    headers: { Accept: 'text/event-stream', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ question }),
+    signal: AbortSignal.any([signal, AbortSignal.timeout(240000)]),
+  })
+  if (!response.ok) {
+    const payload: unknown = await response.json().catch(() => null)
+    const detail =
+      payload &&
+      typeof payload === 'object' &&
+      'detail' in payload &&
+      typeof payload.detail === 'string'
+        ? payload.detail
+        : '请求失败（HTTP ' + response.status + '）'
+    throw new Error(detail)
+  }
+  return readAnalysisStream(response, onEvent)
 }

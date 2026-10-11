@@ -1,9 +1,13 @@
 """Short-lived connections, created only when a database operation is requested."""
 
+from typing import Any
+
 from pydantic import SecretStr
-from sqlalchemy import Engine, create_engine
+from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.pool import NullPool
+
+from app.core.async_work import current_work
 
 
 class DatabaseConfigurationError(ValueError):
@@ -36,7 +40,10 @@ def connection_string(url: URL) -> str:
 
 
 def engine_for(value: SecretStr | None, name: str) -> Engine:
-    return create_engine(
+    work = current_work.get()
+    if work is not None:
+        work.check()
+    engine = create_engine(
         parse_url(value, name),
         poolclass=NullPool,
         hide_parameters=True,
@@ -45,3 +52,15 @@ def engine_for(value: SecretStr | None, name: str) -> Engine:
             "options": "-c statement_timeout=10000 -c lock_timeout=2000",
         },
     )
+
+    if work is not None:
+
+        @event.listens_for(engine, "connect")
+        def register(connection: Any, record: Any) -> None:
+            work.register(connection)
+
+        @event.listens_for(engine, "before_cursor_execute")
+        def check(*args: Any) -> None:
+            work.check()
+
+    return engine

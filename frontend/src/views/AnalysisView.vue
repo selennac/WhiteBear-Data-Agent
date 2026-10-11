@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import QueryResultTable from '../components/QueryResultTable.vue'
 import BaseButton from '../components/ui/BaseButton.vue'
@@ -17,6 +17,7 @@ const statusLabel = {
   running: '运行中',
   succeeded: '查询成功',
   failed: '分析失败',
+  cancelled: '已停止',
   clarification_required: '需要澄清',
 }
 const nodeLabel: Record<string, string> = {
@@ -26,6 +27,7 @@ const nodeLabel: Record<string, string> = {
   execute_query: '执行只读查询',
 }
 onMounted(() => void analysis.loadHistory())
+onBeforeUnmount(() => analysis.disconnect())
 
 async function submit() {
   await analysis.submit(question.value)
@@ -87,7 +89,14 @@ function newAnalysis() {
           />
           <div class="submit-row">
             <span class="muted">{{ question.length }} / 2000</span>
-            <BaseButton type="submit" :disabled="analysis.busy || !question.trim()">{{
+            <BaseButton
+              v-if="analysis.sending"
+              variant="secondary"
+              :disabled="analysis.stopping"
+              @click="analysis.stop()"
+              >{{ analysis.stopping ? '正在停止…' : '停止分析' }}</BaseButton
+            >
+            <BaseButton v-else type="submit" :disabled="analysis.busy || !question.trim()">{{
               analysis.sending ? '正在分析…' : '开始分析'
             }}</BaseButton>
           </div>
@@ -104,7 +113,7 @@ function newAnalysis() {
           </button>
         </div>
         <p v-if="analysis.sending" class="progress" role="status">
-          正在生成、校验并执行查询，必要时自动纠错。完成后显示结果和执行记录。
+          {{ analysis.progress }}
         </p>
         <p v-if="analysis.loading" class="muted" role="status">正在读取历史记录…</p>
         <p v-if="analysis.error" class="error" role="alert">{{ analysis.error }}</p>
@@ -129,10 +138,16 @@ function newAnalysis() {
           <h2>{{ run.question }}</h2>
           <span class="badge" :class="run.status">{{ statusLabel[run.status] }}</span>
         </div>
-        <p v-if="run.status === 'running'" class="muted">
-          该记录尚未完成。可以刷新会话查看结果；若服务曾中断，请重新提交问题。
+        <p v-if="run.status === 'running' && !analysis.sending" class="muted">
+          该记录尚未完成。刷新会话查看状态，或停止此运行后重新提交问题。
+          <BaseButton variant="secondary" :disabled="analysis.busy" @click="analysis.stop()">
+            停止此运行
+          </BaseButton>
         </p>
-        <p v-if="run.error_message" class="error" role="alert">{{ run.error_message }}</p>
+        <p v-if="run.status === 'cancelled'" class="muted" role="status">
+          分析已停止，可以提交新问题。
+        </p>
+        <p v-else-if="run.error_message" class="error" role="alert">{{ run.error_message }}</p>
         <p v-if="run.status === 'clarification_required'" class="clarification">
           {{ run.draft?.clarification }} 请将口径补充到问题后重新提交。
         </p>
@@ -149,14 +164,18 @@ function newAnalysis() {
           <summary>SQL</summary>
           <pre><code>{{ run.draft.sql }}</code></pre>
         </details>
-        <details class="trace">
+        <details class="trace" :open="analysis.sending">
           <summary>执行记录 · {{ run.steps?.length ?? 0 }} 步</summary>
           <ol>
             <li v-for="(step, index) in run.steps" :key="index">
               <span>{{ nodeLabel[step.node] ?? step.node }}</span
               ><span
-                >{{ step.status === 'succeeded' ? '完成' : '失败' }} · 第
-                {{ Math.max(1, step.attempt) }} 次 · {{ step.elapsed_ms }} ms</span
+                >{{
+                  { running: '进行中', succeeded: '完成', failed: '失败', cancelled: '已停止' }[
+                    step.status
+                  ]
+                }}
+                · 第 {{ Math.max(1, step.attempt) }} 次 · {{ step.elapsed_ms }} ms</span
               >
               <p v-if="step.detail">{{ step.detail }}</p>
             </li>

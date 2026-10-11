@@ -1,5 +1,7 @@
 export type {
+  AnalysisEvent,
   AnalysisRun,
+  RunStep,
   ConversationDetail,
   ConversationSummary,
   ColumnSchema,

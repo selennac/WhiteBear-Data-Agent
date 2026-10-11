@@ -1,4 +1,4 @@
-"""Contracts for the first, single-question analysis workflow."""
+"""Contracts for analysis records and incremental stream events."""
 
 from datetime import datetime
 from typing import Literal
@@ -64,7 +64,7 @@ class QueryResult(BaseModel):
 
 class RunStep(BaseModel):
     node: str
-    status: Literal["succeeded", "failed"]
+    status: Literal["running", "succeeded", "failed", "cancelled"]
     attempt: int
     elapsed_ms: int
     detail: str = ""
@@ -74,7 +74,7 @@ class AnalysisRun(BaseModel):
     id: UUID
     conversation_id: UUID
     question: str
-    status: Literal["running", "succeeded", "failed", "clarification_required"]
+    status: Literal["running", "succeeded", "failed", "clarification_required", "cancelled"]
     created_at: datetime
     completed_at: datetime | None = None
     reference_time: datetime
@@ -98,3 +98,15 @@ class ConversationSummary(BaseModel):
 
 class ConversationDetail(ConversationSummary):
     runs: list[AnalysisRun]
+
+
+class AnalysisEvent(BaseModel):
+    type: Literal["run_started", "node_status", "sql", "result", "run_completed", "stream_error"]
+    run_id: UUID
+    run: AnalysisRun | None = None
+    step: RunStep | None = None
+    draft: QueryDraft | None = None
+    result: QueryResult | None = None
+    schema_version: str = ""
+    token_usage: dict[str, int] = Field(default_factory=dict)
+    error_message: str = ""

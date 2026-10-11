@@ -1,6 +1,7 @@
+import asyncio
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
@@ -41,9 +42,13 @@ def test_provider_failures_are_specific_and_do_not_expose_credentials(kind: str)
     }
     settings = Settings(_env_file=None, qwen_api_key=SecretStr("private"))
     with patch("app.llm.query.ChatOpenAI") as model:
-        model.return_value.with_structured_output.return_value.invoke.side_effect = errors[kind]
+        model.return_value.with_structured_output.return_value.ainvoke = AsyncMock(
+            side_effect=errors[kind]
+        )
         with pytest.raises(ModelError) as error:
-            generate_draft(settings, "订单数", context_schema(), datetime.now().astimezone())
+            asyncio.run(
+                generate_draft(settings, "订单数", context_schema(), datetime.now().astimezone())
+            )
     assert (
         error.value.code
         == {
@@ -64,12 +69,13 @@ def test_only_question_and_schema_context_are_sent_and_token_usage_is_kept() -> 
     now = datetime.fromisoformat("2026-10-11T12:00:00+08:00")
     draft = QueryDraft(action="query", sql="SELECT 1")
     with patch("app.llm.query.ChatOpenAI") as model:
-        invoke = model.return_value.with_structured_output.return_value.invoke
+        invoke = AsyncMock()
+        model.return_value.with_structured_output.return_value.ainvoke = invoke
         invoke.return_value = {
             "parsed": draft,
             "raw": SimpleNamespace(usage_metadata={"input_tokens": 12}),
         }
-        actual, usage = generate_draft(settings, "订单数", context_schema(), now)
+        actual, usage = asyncio.run(generate_draft(settings, "订单数", context_schema(), now))
     context = invoke.call_args.args[0][1].content
     assert now.isoformat() in context
     assert "private-key" not in context and "private-password" not in context

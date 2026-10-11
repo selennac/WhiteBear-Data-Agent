@@ -1,3 +1,4 @@
+import asyncio
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
@@ -48,7 +49,7 @@ def test_unexpected_graph_failure_is_saved_without_credentials() -> None:
         patch("app.services.analysis.run_graph", side_effect=RuntimeError("password=private")),
         patch("app.services.analysis.save_run") as save,
     ):
-        result = analyze(settings, uuid4(), "订单数")
+        result = asyncio.run(analyze(settings, uuid4(), "订单数"))
     create.assert_called_once()
     save.assert_called_once_with(settings, result)
     assert result.status == "failed"

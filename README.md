@@ -20,9 +20,10 @@ A local TextToSQL workspace for learning and open-source demos, built with FastA
 - Qwen 结构化查询生成、LangGraph 编排、SQLGlot 校验及最多两次有限纠错。
 - 业务库只读查询：10 秒超时、2 秒锁等待、最多 1,000 行及 2 MB 行数据。
 - 会话、消息和运行记录持久化，保存 SQL、结构版本、口径、诊断及 Token 用量。
-- 前端问数页：推荐问题、历史记录、SQL、结果表格、排序、分页和执行记录。
+- 前端问数页：推荐问题、历史记录、SQL、结果表格、排序、分页和实时执行记录。
+- SSE 分析进度、停止分析、断线取消、连接清理和终态持久化。
 
-当前每个问题独立分析，会话用于保存历史；关键歧义返回澄清提示，补充问题后重新提交。SSE、取消、多轮条件继承、图表和结果总结尚未实现。健康检查和配置引导无需 PostgreSQL 或 Qwen API Key；浏览结构需要 PostgreSQL，问数还需要应用库及模型 Key。健康检查只表示后端进程可响应，不代表数据库或模型已连接。
+当前每个问题独立分析，会话用于保存历史；关键歧义返回澄清提示，补充问题后重新提交。多轮条件继承、图表和结果总结尚未实现。健康检查和配置引导无需 PostgreSQL 或 Qwen API Key；浏览结构需要 PostgreSQL，问数还需要应用库及模型 Key。健康检查只表示后端进程可响应，不代表数据库或模型已连接。
 
 详细规划见 [项目设计](docs/project-design.md)，模块约定见 [项目结构](docs/project-structure.md)。
 
@@ -188,7 +189,7 @@ python -m app.cli business generate --as-of 2026-10-08T12:00:00+08:00 --seed 42 
 
 配置 `QWEN_API_KEY`、模型名和 API 地址，完成迁移后，在工作台“问数分析”页提交“最近 30 天的实付销售额和支付订单数”。模型获得允许的结构、业务说明和指标口径，生成 SQL 后先校验再执行。运行结果会保存，可在历史会话中重新查看。
 
-第二阶段接口使用普通 JSON：`POST /api/v1/conversations` 创建会话，`GET /api/v1/conversations` 列出历史，`POST /api/v1/conversations/{id}/messages` 提交问题，`GET /api/v1/conversations/{id}` 和 `GET /api/v1/runs/{id}` 读取记录。生成、执行失败返回带错误码的运行记录；未配置模型或应用库不可用返回 503。详见 [查询流程与接口](docs/query-workflow.md)。
+原有接口保留普通 JSON：`POST /api/v1/conversations` 创建会话，`GET /api/v1/conversations` 列出历史，`POST /api/v1/conversations/{id}/messages` 提交问题，`GET /api/v1/conversations/{id}` 和 `GET /api/v1/runs/{id}` 读取记录。工作台使用 `POST /api/v1/conversations/{id}/messages/stream` 接收 SSE 进度、SQL 和结果；`POST /api/v1/runs/{id}/cancel` 等待停止、连接清理及取消状态保存。刷新页面、离开问数页或断线会取消未完成的流式分析；已完成的记录可从历史恢复。生成、执行失败返回带错误码的运行记录；未配置模型或应用库不可用返回 503。详见 [查询流程与接口](docs/query-workflow.md)。
 
 ### 应用模型迁移与前端类型
 
@@ -237,7 +238,7 @@ $env:WHITEBEAR_TEST_ADMIN_URL = 'postgresql+psycopg://postgres:your_test_passwor
 python -m pytest
 ```
 
-Linux/macOS 使用 `export WHITEBEAR_TEST_ADMIN_URL='...'`。当前测试验证数据时间与金额约束、可复现性、初始化重复执行、只读权限、说明持久化及重置范围，无需真实模型。
+Linux/macOS 使用 `export WHITEBEAR_TEST_ADMIN_URL='...'`。当前测试验证数据时间与金额约束、可复现性、初始化重复执行、只读权限、说明持久化、重置范围、流式进度、取消后的查询连接释放及历史恢复，无需真实模型。
 
 ## 依赖管理
 

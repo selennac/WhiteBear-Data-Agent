@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime
 from unittest.mock import patch
 from uuid import uuid4
@@ -61,7 +62,7 @@ def test_execution_error_is_repaired_and_usage_accumulated() -> None:
             ],
         ),
     ):
-        run_graph(Settings(_env_file=None), run)
+        asyncio.run(run_graph(Settings(_env_file=None), run))
     assert run.status == "succeeded"
     assert run.schema_version == "fixed"
     assert run.result == result()
@@ -83,7 +84,7 @@ def test_security_violation_never_executes_or_repairs() -> None:
         ) as model,
         patch("app.agent.graph.execute_query") as execute,
     ):
-        run_graph(Settings(_env_file=None), run)
+        asyncio.run(run_graph(Settings(_env_file=None), run))
     assert run.error_code == "unsafe_sql"
     assert model.call_count == 1
     execute.assert_not_called()
@@ -98,7 +99,7 @@ def test_invalid_outputs_stop_after_two_repairs() -> None:
         ) as model,
         patch("app.agent.graph.execute_query") as execute,
     ):
-        run_graph(Settings(_env_file=None), run)
+        asyncio.run(run_graph(Settings(_env_file=None), run))
     assert run.status == "failed"
     assert model.call_count == 3
     execute.assert_not_called()
@@ -117,7 +118,7 @@ def test_clarification_and_empty_results_are_terminal() -> None:
         ),
         patch("app.agent.graph.execute_query") as execute,
     ):
-        run_graph(Settings(_env_file=None), run)
+        asyncio.run(run_graph(Settings(_env_file=None), run))
     assert run.status == "clarification_required"
     execute.assert_not_called()
 
@@ -128,7 +129,7 @@ def test_schema_failure_stops_before_model() -> None:
         patch("app.agent.graph.get_schema", side_effect=RuntimeError("password=secret")),
         patch("app.agent.graph.generate_draft") as model,
     ):
-        run_graph(Settings(_env_file=None), run)
+        asyncio.run(run_graph(Settings(_env_file=None), run))
     assert run.status == "failed"
     assert "secret" not in run.model_dump_json()
     model.assert_not_called()

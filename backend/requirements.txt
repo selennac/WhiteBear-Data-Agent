@@ -4,6 +4,7 @@
 
 alembic
 fastapi
+httpx
 langchain
 langchain-openai
 langgraph
