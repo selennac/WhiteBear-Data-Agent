@@ -52,14 +52,21 @@ class RunManager:
         self.conversations: set[UUID] = set()
         self.closing = False
 
-    async def start(self, settings: Settings, conversation_id: UUID, question: str) -> ActiveRun:
+    def reserve(self, conversation_id: UUID) -> None:
         if self.closing:
             raise RunBusyError("服务正在停止，请稍后重试。")
         if conversation_id in self.conversations:
             raise RunBusyError("该会话已有运行中的分析，请先停止或等待完成。")
-        active = ActiveRun(new_run(settings, conversation_id, question))
-        self.active[active.run.id] = active
         self.conversations.add(conversation_id)
+
+    async def start(self, settings: Settings, conversation_id: UUID, question: str) -> ActiveRun:
+        self.reserve(conversation_id)
+        try:
+            active = ActiveRun(new_run(settings, conversation_id, question))
+        except Exception:
+            self.conversations.discard(conversation_id)
+            raise
+        self.active[active.run.id] = active
         write = asyncio.create_task(run_blocking(create_run, settings, active.run))
         try:
             await asyncio.shield(write)

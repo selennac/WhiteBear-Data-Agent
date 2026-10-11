@@ -78,3 +78,22 @@ def test_run_response_contract(tmp_path: Path) -> None:
     assert response.status_code == 200
     assert response.json()["id"] == str(result.id)
     assert response.json()["error_code"] == "unsafe_sql"
+
+
+def test_json_and_stream_share_the_same_conversation_reservation(tmp_path: Path) -> None:
+    app = create_app(Settings(_env_file=None, frontend_dist=tmp_path, qwen_api_key=None))
+    conversation_id = uuid4()
+    with TestClient(app) as client:
+        app.state.runs.reserve(conversation_id)
+        for endpoint in ("messages", "messages/stream"):
+            response = client.post(
+                f"/api/v1/conversations/{conversation_id}/{endpoint}", json={"question": "追问"}
+            )
+            assert response.status_code == 409
+        app.state.runs.conversations.discard(conversation_id)
+        for endpoint in ("messages", "messages/stream"):
+            response = client.post(
+                f"/api/v1/conversations/{conversation_id}/{endpoint}", json={"question": "追问"}
+            )
+            assert response.status_code == 503
+            assert conversation_id not in app.state.runs.conversations

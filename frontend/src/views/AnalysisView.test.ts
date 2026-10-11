@@ -1,10 +1,11 @@
 import { createPinia } from 'pinia'
 import { flushPromises, mount } from '@vue/test-utils'
-import { expect, it, vi } from 'vitest'
+import { beforeEach, expect, it, vi } from 'vitest'
 
 import { cancelRun, createConversation, getConversations, streamQuestion } from '../services/api'
 import type { AnalysisRun } from '../types/api'
 import AnalysisView from './AnalysisView.vue'
+import { useAnalysisStore } from '../stores/analysis'
 
 vi.mock('../services/api', () => ({
   cancelRun: vi.fn(),
@@ -13,6 +14,11 @@ vi.mock('../services/api', () => ({
   getConversation: vi.fn(),
   streamQuestion: vi.fn(),
 }))
+
+beforeEach(() => {
+  vi.resetAllMocks()
+  vi.mocked(getConversations).mockResolvedValue([])
+})
 
 it('renders progress, stops analysis and enables the next submission', async () => {
   const run: AnalysisRun = {
@@ -59,5 +65,118 @@ it('renders progress, stops analysis and enables the next submission', async () 
   await vi.waitFor(() => expect(view.get('.badge').text()).toBe('已停止'))
   expect(view.get('textarea').attributes('disabled')).toBeUndefined()
   expect(view.text()).toContain('可以提交新问题')
+  view.unmount()
+})
+
+it('continues a clarification with a short answer and displays the complete conditions', async () => {
+  const now = '2026-10-11T12:00:00+08:00'
+  const pending: AnalysisRun = {
+    id: 'clarify-1',
+    conversation_id: 'conversation-1',
+    question: '华东销售额按城市拆分',
+    status: 'clarification_required',
+    created_at: now,
+    reference_time: now,
+    draft: {
+      action: 'clarify',
+      clarification: '没有城市字段，是否使用客户区域？',
+      resolved_question: '最近30天华东销售额按城市拆分',
+    },
+  }
+  const continued: AnalysisRun = {
+    ...pending,
+    id: 'run-2',
+    question: '用客户区域',
+    status: 'succeeded',
+    input_context: {
+      clarification: {
+        run_id: pending.id,
+        question: pending.question,
+        reference_time: now,
+        draft: pending.draft!,
+      },
+    },
+    draft: {
+      action: 'query',
+      context_mode: 'clarification',
+      resolved_question: '最近30天华东实付销售额按客户区域拆分',
+      metrics: ['paid_sales'],
+      filters: ['客户区域=华东', '订单已支付'],
+      group_by: ['客户区域'],
+      time_range: '2026-09-11 至 2026-10-11',
+      sql: 'SELECT 12',
+    },
+  }
+  vi.mocked(createConversation).mockResolvedValue({
+    id: pending.conversation_id,
+    title: '新建分析',
+    datasource_id: 'business',
+    created_at: now,
+  })
+  vi.mocked(streamQuestion)
+    .mockImplementationOnce(async (_id, _question, receive) => {
+      receive({ type: 'run_completed', run_id: pending.id, run: pending })
+      return pending
+    })
+    .mockImplementationOnce(async (_id, _question, receive) => {
+      receive({ type: 'run_completed', run_id: continued.id, run: continued })
+      return continued
+    })
+  const view = mount(AnalysisView, { global: { plugins: [createPinia()] } })
+  await flushPromises()
+  await view.get('textarea').setValue(pending.question)
+  await view.get('form').trigger('submit')
+  await flushPromises()
+  expect(view.text()).toContain('直接在输入框回答即可继续')
+  expect(view.text()).toContain('补充并继续')
+  expect((view.get('textarea').element as HTMLTextAreaElement).value).toBe('')
+  await view.get('textarea').setValue('用客户区域')
+  await view.get('form').trigger('submit')
+  await flushPromises()
+  expect(streamQuestion).toHaveBeenLastCalledWith(
+    pending.conversation_id,
+    '用客户区域',
+    expect.any(Function),
+    expect.any(AbortSignal),
+  )
+  const conditions = view.get('[aria-label="本轮分析口径"]').text()
+  expect(conditions).toContain('接续澄清')
+  expect(conditions).toContain(continued.draft!.resolved_question)
+  expect(conditions).toContain('实付销售额')
+  expect(conditions).toContain('客户区域=华东')
+  expect(conditions).toContain('客户区域')
+  await view
+    .findAll('button')
+    .find((button) => button.text() === '新建分析')!
+    .trigger('click')
+  expect(view.find('.continuation').exists()).toBe(false)
+  expect(view.get('textarea').attributes('placeholder')).toContain('最近 30 天的实付销售额')
+  view.unmount()
+})
+
+it('keeps the latest valid continuation when viewing an older result or a failed run', async () => {
+  const pinia = createPinia()
+  const view = mount(AnalysisView, { global: { plugins: [pinia] } })
+  await flushPromises()
+  const state = useAnalysisStore(pinia)
+  const run: AnalysisRun = {
+    id: 'old',
+    conversation_id: 'conversation-1',
+    question: '旧问题',
+    status: 'succeeded',
+    created_at: '2026-10-11T12:00:00+08:00',
+    reference_time: '2026-10-11T12:00:00+08:00',
+    draft: { action: 'query', sql: 'SELECT 1' },
+  }
+  state.runs = [
+    run,
+    { ...run, id: 'latest', question: '最近7天华东销售额' },
+    { ...run, id: 'failed', status: 'failed', question: '华南订单数' },
+  ]
+  state.selectedRun = run
+  await flushPromises()
+  expect(view.get('.continuation').text()).toContain('最近7天华东销售额')
+  expect(view.get('.continuation').text()).not.toContain('华南订单数')
+  expect(view.get('.output-heading').text()).toContain('旧问题')
   view.unmount()
 })

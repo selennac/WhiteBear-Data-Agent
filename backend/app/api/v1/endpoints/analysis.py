@@ -78,8 +78,13 @@ def conversation(conversation_id: UUID, request: Request) -> ConversationDetail:
 @router.post("/conversations/{conversation_id}/messages", response_model=AnalysisRun)
 async def message(conversation_id: UUID, body: MessageCreate, request: Request) -> AnalysisRun:
     # Keep the original JSON contract available for scripts and API clients.
+    manager: RunManager = request.app.state.runs
     try:
-        return await analyze(request.app.state.settings, conversation_id, body.question)
+        manager.reserve(conversation_id)
+        try:
+            return await analyze(request.app.state.settings, conversation_id, body.question)
+        finally:
+            manager.conversations.discard(conversation_id)
     except Exception as error:
         http_error(error)
 

@@ -1,4 +1,5 @@
 import asyncio
+import json
 from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -19,8 +20,9 @@ from app.core.config import Settings
 from app.datasources.execution import QueryExecutionError, execute_query
 from app.db.connections import connection_string, engine_for, parse_url
 from app.main import create_app
-from app.repositories.analysis import create_conversation
+from app.repositories.analysis import create_conversation, create_run, save_run
 from app.schemas.analysis import ConversationCreate, QueryDraft
+from app.services.analysis import new_run
 from app.services.datasource import get_schema
 from app.services.streaming import RunManager
 
@@ -245,3 +247,132 @@ def test_cancel_api_persists_history_across_app_instances(
             client.get(f"/api/v1/conversations/{conversation_id}").json()["runs"][-1]["status"]
             == "cancelled"
         )
+
+
+@pytest.mark.parametrize("endpoint", ["messages", "messages/stream"])
+def test_follow_up_overrides_and_clarification_survive_restart(
+    query_settings: Settings,
+    tmp_path: Path,
+    endpoint: str,
+) -> None:
+    config = query_settings.model_copy(update={"frontend_dist": tmp_path})
+    conversation = create_conversation(config, ConversationCreate())
+    fixed_end = datetime.fromisoformat("2026-10-11T12:00:00+08:00")
+    start, end = fixed_end - timedelta(days=30), fixed_end
+    questions = ["最近30天华东客户的订单数", "按天拆分", "改成最近7天", "按城市拆分", "用区域"]
+    previous_id = None
+    pending_id = None
+    responses = []
+
+    async def model(settings, question, schema, reference_time, **kwargs):
+        nonlocal start, end
+        context = kwargs["conversation_context"]
+        position = questions.index(question)
+        if position == 0:
+            assert context.previous is None and context.clarification is None
+        else:
+            assert str(context.previous.run_id) == previous_id
+            assert context.previous.draft.metrics == ["paid_orders"]
+            assert context.previous.draft.filters == ["客户区域=华东", "订单已支付"]
+        if position == 2:
+            assert context.previous.draft.group_by == ["支付日期"]
+            start, end = reference_time - timedelta(days=7), reference_time
+        mode = "new" if position == 0 else "follow_up" if position < 4 else "clarification"
+        grouping = ["支付日期"] if 1 <= position <= 3 else ["客户区域"] if position == 4 else []
+        if position == 4:
+            assert str(context.clarification.run_id) == pending_id
+            assert context.clarification.draft.resolved_question.startswith("华东")
+            assert context.clarification.draft.group_by == ["支付日期"]
+        draft = QueryDraft(
+            action="clarify" if position == 3 else "query",
+            sql="" if position == 3 else "SELECT 1",
+            context_mode=mode,
+            resolved_question="华东已支付订单数，按"
+            + ("客户区域" if position == 4 else "支付日期"),
+            metrics=["paid_orders"],
+            time_range=f"{start.isoformat()} 至 {end.isoformat()}",
+            filters=["客户区域=华东", "订单已支付"],
+            group_by=grouping,
+            clarification="没有客户城市字段，是否使用客户区域？" if position == 3 else "",
+        )
+        if position != 3:
+            dimension = "date_trunc('day', o.paid_at)" if grouping == ["支付日期"] else "c.region"
+            draft.sql = (
+                f"SELECT {dimension + ', ' if grouping else ''}COUNT(DISTINCT o.id) AS orders "
+                "FROM whitebear_business.orders o "
+                "JOIN whitebear_business.customers c ON c.id = o.customer_id "
+                f"WHERE o.paid_at >= TIMESTAMPTZ '{start.isoformat()}' "
+                f"AND o.paid_at < TIMESTAMPTZ '{end.isoformat()}' "
+                "AND c.region = '华东' AND o.status = 'paid' "
+                + ("GROUP BY 1 ORDER BY 1" if grouping else "")
+            )
+        return draft, {}
+
+    for index, question in enumerate(questions):
+        # Start a fresh app for every turn: all inheritance must come from the application DB.
+        with (
+            patch("app.agent.graph.generate_draft", side_effect=model),
+            TestClient(create_app(config)) as client,
+        ):
+            response = client.post(
+                f"/api/v1/conversations/{conversation.id}/{endpoint}",
+                json={"question": question},
+            )
+            assert response.status_code == 200, response.text
+            if endpoint.endswith("stream"):
+                events = [
+                    json.loads(line[6:])
+                    for line in response.text.splitlines()
+                    if line.startswith("data: ")
+                ]
+                run = events[-1]["run"]
+                assert events[0]["run"]["input_context"] == run["input_context"]
+            else:
+                run = response.json()
+            assert run["status"] == ("clarification_required" if index == 3 else "succeeded"), (
+                run["error_code"],
+                run["error_message"],
+                run["steps"],
+            )
+            responses.append(run)
+            if index == 3:
+                pending_id = run["id"]
+            else:
+                previous_id = run["id"]
+        if index == 0:
+            # Newer failures and cancellations must not replace the successful inheritance source.
+            for status in ("failed", "cancelled"):
+                ignored = new_run(config, conversation.id, "无效的另一组条件")
+                create_run(config, ignored)
+                ignored.status = status
+                ignored.completed_at = ignored.created_at
+                ignored.draft = QueryDraft(
+                    action="query", sql="SELECT 1", filters=["客户区域=华南"]
+                )
+                save_run(config, ignored)
+
+    dataset = generate_dataset(GenerationOptions(as_of=fixed_end, orders=1500))
+    east_customers = {row["id"] for row in dataset.rows["customers"] if row["region"] == "华东"}
+    expected = sum(
+        1
+        for row in dataset.rows["orders"]
+        if row["customer_id"] in east_customers
+        and row["paid_at"] is not None
+        and start <= row["paid_at"] < end
+    )
+    assert responses[-1]["result"]["rows"] == [["华东", expected]]
+    assert responses[1]["draft"]["time_range"] == responses[0]["draft"]["time_range"]
+    assert responses[2]["draft"]["time_range"] != responses[1]["draft"]["time_range"]
+    with TestClient(create_app(config)) as client:
+        assert client.get(f"/api/v1/runs/{responses[-1]['id']}").json() == responses[-1]
+
+    # A completed clarification closes the pending request; a different conversation is empty.
+    after = new_run(config, conversation.id, "新问题")
+    create_run(config, after)
+    assert after.input_context.previous.run_id == UUID(responses[-1]["id"])
+    assert after.input_context.clarification is None
+    other = create_conversation(config, ConversationCreate())
+    independent = new_run(config, other.id, "按天拆分")
+    create_run(config, independent)
+    assert independent.input_context.previous is None
+    assert independent.input_context.clarification is None

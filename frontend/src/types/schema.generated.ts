@@ -23,6 +23,7 @@ export interface AnalysisRun {
   schema_version?: string
   prompt_version?: string
   model?: string
+  input_context?: ConversationContext
   draft?: QueryDraft | null
   result?: QueryResult | null
   steps?: Array<RunStep>
@@ -37,6 +38,18 @@ export interface ColumnSchema {
   nullable: boolean
   primary_key: boolean
   description?: string
+}
+
+export interface ContextTurn {
+  run_id: string
+  question: string
+  reference_time: string
+  draft: QueryDraft
+}
+
+export interface ConversationContext {
+  previous?: ContextTurn | null
+  clarification?: ContextTurn | null
 }
 
 export interface ConversationCreate {
@@ -138,6 +151,10 @@ export interface QueryDraft {
   time_range?: string
   assumptions?: Array<string>
   clarification?: string
+  context_mode?: 'new' | 'follow_up' | 'clarification'
+  resolved_question?: string
+  filters?: Array<string>
+  group_by?: Array<string>
 }
 
 export interface QueryResult {

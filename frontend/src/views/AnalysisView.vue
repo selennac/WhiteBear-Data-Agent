@@ -13,6 +13,23 @@ const examples = [
   '最近 30 天销售额最高的五个商品',
 ]
 const run = computed(() => analysis.selectedRun)
+const continuation = computed(() =>
+  [...analysis.runs]
+    .reverse()
+    .find((item) => ['succeeded', 'clarification_required'].includes(item.status) && item.draft),
+)
+const sourceTurn = computed(() => {
+  if (run.value?.draft?.context_mode === 'follow_up') return run.value.input_context?.previous
+  if (run.value?.draft?.context_mode === 'clarification')
+    return run.value.input_context?.clarification
+  return null
+})
+const metricLabel: Record<string, string> = {
+  paid_sales: '实付销售额',
+  paid_orders: '支付订单数',
+  average_order_value: '客单价',
+  successful_refunds: '成功退款额',
+}
 const statusLabel = {
   running: '运行中',
   succeeded: '查询成功',
@@ -31,6 +48,12 @@ onBeforeUnmount(() => analysis.disconnect())
 
 async function submit() {
   await analysis.submit(question.value)
+  if (!analysis.error && analysis.selectedRun?.status !== 'running') question.value = ''
+}
+
+function answerClarification() {
+  question.value = ''
+  document.getElementById('analysis-question')?.focus()
 }
 
 function newAnalysis() {
@@ -75,7 +98,14 @@ function newAnalysis() {
       <section class="panel composer">
         <div class="eyebrow">电商业务数据</div>
         <h1>用问题开始分析</h1>
-        <p class="muted">查询销售、订单和退款。未指定时间时默认最近 30 天，每个问题独立分析。</p>
+        <p class="muted">
+          查询销售、订单和退款。可继续追问并修改条件；新问题未指定时间时默认最近 30 天。
+        </p>
+        <p v-if="continuation" class="continuation" role="status">
+          {{ continuation.status === 'clarification_required' ? '待补充条件：' : '可继续追问：' }}
+          {{ continuation.draft?.resolved_question || continuation.question }}
+          <span class="muted">追问接续本会话最近的分析；开始新话题可点击“新建分析”。</span>
+        </p>
         <form @submit.prevent="submit">
           <label for="analysis-question" class="question-label">分析问题</label>
           <textarea
@@ -84,7 +114,13 @@ function newAnalysis() {
             maxlength="2000"
             rows="3"
             :disabled="analysis.busy"
-            placeholder="例如：最近 30 天的实付销售额和支付订单数"
+            :placeholder="
+              continuation?.status === 'clarification_required'
+                ? '直接回答澄清问题，例如：按支付时间，不扣退款'
+                : continuation
+                  ? '例如：按品类拆分，或改成最近 7 天'
+                  : '例如：最近 30 天的实付销售额和支付订单数'
+            "
             required
           />
           <div class="submit-row">
@@ -97,7 +133,7 @@ function newAnalysis() {
               >{{ analysis.stopping ? '正在停止…' : '停止分析' }}</BaseButton
             >
             <BaseButton v-else type="submit" :disabled="analysis.busy || !question.trim()">{{
-              analysis.sending ? '正在分析…' : '开始分析'
+              continuation?.status === 'clarification_required' ? '补充并继续' : '开始分析'
             }}</BaseButton>
           </div>
         </form>
@@ -149,10 +185,40 @@ function newAnalysis() {
         </p>
         <p v-else-if="run.error_message" class="error" role="alert">{{ run.error_message }}</p>
         <p v-if="run.status === 'clarification_required'" class="clarification">
-          {{ run.draft?.clarification }} 请将口径补充到问题后重新提交。
+          {{ run.draft?.clarification }}
+          <span v-if="continuation?.id === run.id">直接在输入框回答即可继续。</span>
+          <BaseButton
+            v-if="continuation?.id === run.id"
+            variant="secondary"
+            :disabled="analysis.busy"
+            @click="answerClarification"
+            >补充条件</BaseButton
+          >
         </p>
-        <div v-if="run.draft?.time_range" class="context">
-          <strong>时间范围</strong><span>{{ run.draft.time_range }}</span>
+        <div v-if="run.draft" class="effective-context" aria-label="本轮分析口径">
+          <h3>本轮分析口径</h3>
+          <div v-if="sourceTurn" class="context">
+            <strong>{{
+              run.draft.context_mode === 'clarification' ? '接续澄清' : '追问来源'
+            }}</strong>
+            <span>{{ sourceTurn.draft.resolved_question || sourceTurn.question }}</span>
+          </div>
+          <div v-if="run.draft.resolved_question" class="context">
+            <strong>完整问题</strong><span>{{ run.draft.resolved_question }}</span>
+          </div>
+          <div v-if="run.draft.metrics?.length" class="context">
+            <strong>指标</strong>
+            <span>{{ run.draft.metrics.map((id) => metricLabel[id] || id).join('、') }}</span>
+          </div>
+          <div v-if="run.draft.time_range" class="context">
+            <strong>时间范围</strong><span>{{ run.draft.time_range }}</span>
+          </div>
+          <div v-if="run.draft.filters" class="context">
+            <strong>筛选条件</strong><span>{{ run.draft.filters.join('；') || '无额外筛选' }}</span>
+          </div>
+          <div v-if="run.draft.group_by" class="context">
+            <strong>分组</strong><span>{{ run.draft.group_by.join('、') || '不分组' }}</span>
+          </div>
         </div>
         <ul v-if="run.draft?.assumptions?.length" class="assumptions">
           <li v-for="(assumption, index) in run.draft.assumptions" :key="index">
@@ -383,6 +449,32 @@ h2 {
   gap: 12px;
   font-size: 13px;
   margin-bottom: 12px;
+}
+.continuation,
+.effective-context {
+  padding: 14px;
+  border-radius: var(--radius-sm);
+  background: var(--color-background);
+  font-size: 13px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.continuation .muted {
+  display: block;
+  margin-top: 6px;
+}
+.effective-context {
+  margin-bottom: 12px;
+}
+.effective-context h3 {
+  margin: 0 0 12px;
+  font-size: 13px;
+}
+.context:last-child {
+  margin-bottom: 0;
+}
+.clarification .base-button {
+  margin-left: 12px;
 }
 .assumptions {
   color: var(--color-muted);

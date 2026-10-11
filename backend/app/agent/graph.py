@@ -1,4 +1,4 @@
-"""Single-question graph with incremental progress and bounded repair."""
+"""Conversation-aware query graph with incremental progress and bounded repair."""
 
 import asyncio
 from collections.abc import Awaitable, Callable
@@ -111,6 +111,7 @@ async def run_graph(
                 run.reference_time,
                 previous_sql=state["draft"].sql if state["draft"] else "",
                 diagnostic=state["diagnostic"],
+                conversation_context=run.input_context,
             )
             for key, value in usage.items():
                 run.token_usage[key] = run.token_usage.get(key, 0) + value
@@ -119,6 +120,15 @@ async def run_graph(
                 raise ModelError(
                     "model_output_invalid", "模型引用了未定义的指标，请依据业务口径修正。"
                 )
+            source = {
+                "new": True,
+                "follow_up": run.input_context.previous is not None,
+                "clarification": run.input_context.clarification is not None,
+            }
+            if not source[draft.context_mode]:
+                raise ModelError("model_output_invalid", "该追问没有对应的历史，请澄清分析条件。")
+            if not draft.resolved_question:
+                draft.resolved_question = run.question
             run.draft = draft
             publish_draft()
             if draft.action == "clarify":

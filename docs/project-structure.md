@@ -23,7 +23,9 @@
 
 路由保持薄层，Agent 节点复用服务。业务库的只读访问与应用库的写入使用独立连接。数据库、模型连接按实际用例创建，不在模块导入或基础健康检查时连接外部服务。
 
-当前 API 包含 `GET /api/v1/health`、数据源列表、结构读取、同步和业务说明修改；`/docs`、`/redoc` 和 `/openapi.json` 由 FastAPI 提供。会话创建、历史列表、独立问题提交和运行记录查询接口已注册；原有 JSON 接口保留，流式提交及取消接口已接入；应用生命周期管理运行任务及退出清理。结构访问只读扫描六张允许的电商业务表，应用侧 `datasource_metadata` 保存快照和说明，业务库注释不被修改。
+当前 API 包含 `GET /api/v1/health`、数据源列表、结构读取、同步和业务说明修改；`/docs`、`/redoc` 和 `/openapi.json` 由 FastAPI 提供。会话创建、历史列表、问题提交和运行记录查询接口已注册；原有 JSON 接口保留，流式提交及取消接口已接入，JSON 与 SSE 共用会话占用标记；应用生命周期管理运行任务及退出清理。结构访问只读扫描六张允许的电商业务表，应用侧 `datasource_metadata` 保存快照和说明，业务库注释不被修改。
+
+`app/repositories/analysis.py` 在创建运行时保存最近成功方案与待澄清方案的上下文快照。`app/llm/query.py` 使用 `query-v2` 提示词解析继承和覆盖，`app/agent/graph.py` 校验上下文来源、指标与 SQL；历史上下文无需 checkpoint 恢复，也不向模型发送结果行。新增契约保存在现有 JSONB 载荷中，兼容旧记录。
 
 `app/db/initialize.py` 通过独立管理连接创建数据库与账号，随后迁移应用模型、初始化 checkpoint，并由业务属主账号创建标记过的 `whitebear_business` Schema。`app/business/generator.py` 是无需数据库的纯生成器；`storage.py` 使用事务和 advisory lock 保护生成与受控重置。
 
@@ -38,7 +40,7 @@
 | `src/types` | 前端 API 契约，由 OpenAPI 生成 |
 | `src/styles` | 颜色、间距、圆角变量和全局基础样式 |
 
-复杂交互使用 Reka UI，图标使用 Lucide，图表使用 vue-echarts。它们已声明为依赖，后续按功能按需接入。当前问数页提供问题输入、历史会话、SQL、结果表格、排序分页及实时执行记录、停止分析与断线恢复；结构页展示表、字段、外键、业务口径和数据覆盖范围，并提供业务说明编辑、加载和错误状态。`schema.generated.ts` 由 `scripts/generate_api_types.py` 从 OpenAPI 生成。
+复杂交互使用 Reka UI，图标使用 Lucide，图表使用 vue-echarts。它们已声明为依赖，后续按功能按需接入。当前问数页提供问题输入、历史会话、SQL、结果表格、排序分页、实时执行记录、停止分析与断线恢复，并展示追问来源、完整条件及澄清继续入口；结构页展示表、字段、外键、业务口径和数据覆盖范围，并提供业务说明编辑、加载和错误状态。`schema.generated.ts` 由 `scripts/generate_api_types.py` 从 OpenAPI 生成。
 
 ## 数据、评测与测试
 

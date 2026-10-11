@@ -39,6 +39,10 @@ class QueryDraft(BaseModel):
     time_range: str = Field(default="", max_length=1000)
     assumptions: list[str] = Field(default_factory=list, max_length=20)
     clarification: str = Field(default="", max_length=2000)
+    context_mode: Literal["new", "follow_up", "clarification"] = "new"
+    resolved_question: str = Field(default="", max_length=4000)
+    filters: list[str] = Field(default_factory=list, max_length=20)
+    group_by: list[str] = Field(default_factory=list, max_length=20)
 
     @model_validator(mode="after")
     def require_action_content(self) -> "QueryDraft":
@@ -47,6 +51,18 @@ class QueryDraft(BaseModel):
         if self.action == "clarify" and not self.clarification.strip():
             raise ValueError("澄清方案必须包含问题。")
         return self
+
+
+class ContextTurn(BaseModel):
+    run_id: UUID
+    question: str
+    reference_time: datetime
+    draft: QueryDraft
+
+
+class ConversationContext(BaseModel):
+    previous: ContextTurn | None = None
+    clarification: ContextTurn | None = None
 
 
 class QueryColumn(BaseModel):
@@ -81,6 +97,7 @@ class AnalysisRun(BaseModel):
     schema_version: str = ""
     prompt_version: str = "query-v1"
     model: str = ""
+    input_context: ConversationContext = Field(default_factory=ConversationContext)
     draft: QueryDraft | None = None
     result: QueryResult | None = None
     steps: list[RunStep] = Field(default_factory=list)

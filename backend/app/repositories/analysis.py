@@ -9,6 +9,8 @@ from app.db.connections import engine_for
 from app.db.models import AnalysisRunRecord, Conversation, Message
 from app.schemas.analysis import (
     AnalysisRun,
+    ContextTurn,
+    ConversationContext,
     ConversationCreate,
     ConversationDetail,
     ConversationSummary,
@@ -84,6 +86,7 @@ def create_run(settings: Settings, run: AnalysisRun) -> None:
             conversation = session.get(Conversation, run.conversation_id)
             if conversation is None:
                 raise RecordNotFoundError("会话不存在。")
+            run.input_context = load_context(session, run.conversation_id)
             message_id = uuid4()
             session.add(
                 Message(
@@ -108,6 +111,39 @@ def create_run(settings: Settings, run: AnalysisRun) -> None:
                 conversation.title = run.question[:100]
     finally:
         engine.dispose()
+
+
+def load_context(session: Session, conversation_id: UUID) -> ConversationContext:
+    """Snapshot two relevant turns, without recursively copying history or result rows."""
+    context = ConversationContext()
+    previous_created_at: datetime | None = None
+    for status in ("succeeded", "clarification_required"):
+        record = session.scalar(
+            select(AnalysisRunRecord)
+            .where(
+                AnalysisRunRecord.conversation_id == conversation_id,
+                AnalysisRunRecord.payload["status"].as_string() == status,
+            )
+            .order_by(AnalysisRunRecord.created_at.desc(), AnalysisRunRecord.id.desc())
+            .limit(1)
+        )
+        if record is None:
+            continue
+        previous = AnalysisRun.model_validate(record.payload)
+        if previous.draft is None:
+            continue
+        turn = ContextTurn(
+            run_id=previous.id,
+            question=previous.question,
+            reference_time=previous.reference_time,
+            draft=previous.draft,
+        )
+        if status == "succeeded":
+            context.previous = turn
+            previous_created_at = previous.created_at
+        elif previous_created_at is None or previous.created_at > previous_created_at:
+            context.clarification = turn
+    return context
 
 
 def save_run(settings: Settings, run: AnalysisRun) -> None:

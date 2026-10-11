@@ -2,6 +2,7 @@ import asyncio
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -10,7 +11,7 @@ from pydantic import SecretStr
 
 from app.core.config import Settings
 from app.llm.query import ModelError, generate_draft
-from app.schemas.analysis import QueryDraft
+from app.schemas.analysis import ContextTurn, ConversationContext, QueryDraft
 from app.schemas.datasource import DatasourceSchema, MetricsDocument
 
 
@@ -81,3 +82,47 @@ def test_only_question_and_schema_context_are_sent_and_token_usage_is_kept() -> 
     assert "private-key" not in context and "private-password" not in context
     assert '"dataset"' not in context
     assert actual == draft and usage == {"input_tokens": 12}
+
+
+def test_follow_up_context_is_sent_without_credentials_or_result_rows() -> None:
+    import json
+
+    now = datetime.fromisoformat("2026-10-11T12:00:00+08:00")
+    previous = ContextTurn(
+        run_id=uuid4(),
+        question="最近30天华东订单数",
+        reference_time=now,
+        draft=QueryDraft(
+            action="query",
+            sql="SELECT 12",
+            metrics=["paid_orders"],
+            time_range="2026-09-11 至 2026-10-11",
+            filters=["客户区域=华东"],
+        ),
+    )
+    pending = previous.model_copy(
+        update={
+            "run_id": uuid4(),
+            "question": "按城市拆分",
+            "draft": QueryDraft(action="clarify", clarification="是否使用客户区域代替城市？"),
+        }
+    )
+    conversation = ConversationContext(previous=previous, clarification=pending)
+    settings = Settings(_env_file=None, qwen_api_key=SecretStr("private"))
+    with patch("app.llm.query.ChatOpenAI") as model:
+        invoke = AsyncMock(return_value={"parsed": QueryDraft(action="query", sql="SELECT 1")})
+        model.return_value.with_structured_output.return_value.ainvoke = invoke
+        asyncio.run(
+            generate_draft(
+                settings,
+                "用客户区域",
+                context_schema(),
+                now,
+                conversation_context=conversation,
+            )
+        )
+    payload = json.loads(invoke.call_args.args[0][1].content)
+    assert payload["conversation_context"] == conversation.model_dump(mode="json")
+    assert payload["question"] == "用客户区域"
+    assert "rows" not in payload and "result" not in payload
+    assert "private" not in json.dumps(payload)
