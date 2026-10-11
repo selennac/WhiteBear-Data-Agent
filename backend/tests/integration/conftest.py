@@ -14,8 +14,7 @@ from app.db.connections import connection_string
 from app.db.initialize import initialize_database
 
 
-@pytest.fixture(scope="session")
-def database_settings() -> Iterator[Settings]:
+def provision_database() -> Iterator[Settings]:
     value = os.environ.get("WHITEBEAR_TEST_ADMIN_URL")
     if not value:
         pytest.skip("设置 WHITEBEAR_TEST_ADMIN_URL 才会运行 PostgreSQL 集成测试。")
@@ -48,3 +47,14 @@ def database_settings() -> Iterator[Settings]:
                 )
             for name in (app_role, owner_role, reader_role):
                 connection.execute(sql.SQL("DROP ROLE IF EXISTS {}").format(sql.Identifier(name)))
+
+
+@pytest.fixture(scope="session")
+def database_settings() -> Iterator[Settings]:
+    yield from provision_database()
+
+
+@pytest.fixture(scope="session")
+def query_database_settings() -> Iterator[Settings]:
+    # Query tests own a separate disposable dataset; foundation tests start with empty tables.
+    yield from provision_database()

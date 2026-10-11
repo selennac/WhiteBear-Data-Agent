@@ -1,14 +1,17 @@
 import type {
+  AnalysisRun,
+  ConversationDetail,
+  ConversationSummary,
   DatasourceSchema,
   DatasourceSummary,
   HealthResponse,
   MetadataPatch,
 } from '../types/api'
 
-async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+async function request<T>(path: string, options: RequestInit = {}, timeoutMs = 20000): Promise<T> {
   const response = await fetch(`/api/v1${path}`, {
     ...options,
-    signal: AbortSignal.timeout(20000),
+    signal: options.signal ?? AbortSignal.timeout(timeoutMs),
     headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
   })
   if (!response.ok) {
@@ -34,6 +37,18 @@ export const patchMetadata = (patch: MetadataPatch) =>
     method: 'PATCH',
     body: JSON.stringify(patch),
   })
+
+export const getConversations = (offset = 0) =>
+  request<ConversationSummary[]>(`/conversations?offset=${offset}`)
+export const createConversation = () =>
+  request<ConversationSummary>('/conversations', { method: 'POST', body: '{}' })
+export const getConversation = (id: string) => request<ConversationDetail>(`/conversations/${id}`)
+export const sendQuestion = (id: string, question: string) =>
+  request<AnalysisRun>(
+    `/conversations/${id}/messages`,
+    { method: 'POST', body: JSON.stringify({ question }) },
+    240000,
+  )
 
 export async function getHealth(): Promise<HealthResponse> {
   const response = await fetch('/api/v1/health', {

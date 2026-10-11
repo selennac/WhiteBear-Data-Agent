@@ -254,7 +254,7 @@ python -m app.cli business generate</pre>
         </div>
       </section>
       <p class="footnote">
-        自然语言问数、SQL 执行与图表将在下一阶段接入。<span v-if="data.schema.synced_at"
+        切换到“问数分析”，根据当前结构和业务口径提出问题。<span v-if="data.schema.synced_at"
           >结构同步于 {{ formatTime(data.schema.synced_at) }}</span
         >
       </p>

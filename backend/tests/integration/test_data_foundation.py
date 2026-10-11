@@ -26,7 +26,7 @@ def test_provisioning_is_repeatable_and_initializes_checkpoints(
             assert connection.execute(text("SELECT to_regclass('public.checkpoints')")).scalar()
             assert (
                 connection.execute(text("SELECT version_num FROM alembic_version")).scalar()
-                == "0001"
+                == "0002"
             )
     finally:
         engine.dispose()

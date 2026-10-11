@@ -21,7 +21,7 @@ def ts_type(schema: dict[str, Any]) -> str:
     if "enum" in schema:
         return " | ".join(ts_type({"const": item}) for item in schema["enum"])
     if "anyOf" in schema:
-        return " | ".join(ts_type(item) for item in schema["anyOf"])
+        return " | ".join(dict.fromkeys(ts_type(item) for item in schema["anyOf"]))
     kind = schema.get("type")
     if kind == "array":
         return f"Array<{ts_type(schema.get('items', {}))}>"

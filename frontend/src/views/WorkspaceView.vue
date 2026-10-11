@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { Database } from 'lucide-vue-next'
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useSystemStore } from '../stores/system'
 import DataStructureView from './DataStructureView.vue'
+import AnalysisView from './AnalysisView.vue'
 const system = useSystemStore()
+const page = ref<'analysis' | 'schema'>('analysis')
 const statusText = computed(() => {
   switch (system.status) {
     case 'connected':
@@ -25,7 +27,24 @@ onMounted(() => void system.checkHealth())
         <span class="brand-mark"><Database :size="22" aria-hidden="true" /></span>
         <span>WhiteBear<span class="brand-light">DataAgent</span></span>
       </a>
-      <span class="section-label">数据结构</span>
+      <nav class="page-nav" aria-label="工作台页面">
+        <button
+          type="button"
+          :aria-pressed="page === 'analysis'"
+          :class="{ active: page === 'analysis' }"
+          @click="page = 'analysis'"
+        >
+          问数分析
+        </button>
+        <button
+          type="button"
+          :aria-pressed="page === 'schema'"
+          :class="{ active: page === 'schema' }"
+          @click="page = 'schema'"
+        >
+          数据结构
+        </button>
+      </nav>
       <button
         class="status"
         :class="system.status"
@@ -36,7 +55,8 @@ onMounted(() => void system.checkHealth())
         <span role="status">{{ statusText }}</span>
       </button>
     </header>
-    <DataStructureView />
+    <AnalysisView v-show="page === 'analysis'" />
+    <DataStructureView v-show="page === 'schema'" />
   </div>
 </template>
 <style scoped>
@@ -73,11 +93,26 @@ onMounted(() => void system.checkHealth())
 .brand-light {
   font-weight: 400;
 }
-.section-label {
-  color: var(--color-primary);
+.page-nav {
+  display: flex;
+  gap: 8px;
+}
+.page-nav button {
+  border: 0;
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  cursor: pointer;
+  background: transparent;
+  color: var(--color-muted);
   font-size: 13px;
-  padding-left: 24px;
-  border-left: 1px solid var(--color-border);
+}
+.page-nav button.active {
+  color: var(--color-primary);
+  background: var(--color-primary-soft);
+}
+.page-nav button:focus-visible {
+  outline: 3px solid var(--color-focus);
+  outline-offset: 2px;
 }
 .status {
   margin-left: auto;
@@ -105,9 +140,6 @@ onMounted(() => void system.checkHealth())
   .header {
     padding: 16px;
     gap: 12px;
-  }
-  .section-label {
-    display: none;
   }
   .brand {
     font-size: 16px;

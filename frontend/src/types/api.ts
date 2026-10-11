@@ -1,10 +1,14 @@
 export type {
+  AnalysisRun,
+  ConversationDetail,
+  ConversationSummary,
   ColumnSchema,
   DatasetSummary,
   DatasourceSchema,
   DatasourceSummary,
   MetadataPatch,
   MetricDefinition,
+  QueryResult,
   TableSchema,
 } from './schema.generated'
 

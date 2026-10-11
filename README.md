@@ -6,7 +6,7 @@ A local TextToSQL workspace for learning and open-source demos, built with FastA
 
 ## 当前状态
 
-当前已完成可运行的工程基础和数据准备流程：
+当前已完成工程基础、数据准备和单轮问数闭环：
 
 - FastAPI 应用、环境配置、健康检查、OpenAPI 文档和配置状态 CLI。
 - Vue 3 + TypeScript + Vite 页面、Pinia 状态、自定义按钮和 CSS 设计变量。
@@ -17,8 +17,12 @@ A local TextToSQL workspace for learning and open-source demos, built with FastA
 - 可复现电商业务数据：六张业务表、近期订单、金额及退款约束、受控重置。
 - 数据源结构接口、应用内业务说明持久化、版本化指标口径 YAML。
 - 前端数据结构页：字段、关联关系、业务说明编辑和生成数据覆盖范围。
+- Qwen 结构化查询生成、LangGraph 编排、SQLGlot 校验及最多两次有限纠错。
+- 业务库只读查询：10 秒超时、2 秒锁等待、最多 1,000 行及 2 MB 行数据。
+- 会话、消息和运行记录持久化，保存 SQL、结构版本、口径、诊断及 Token 用量。
+- 前端问数页：推荐问题、历史记录、SQL、结果表格、排序、分页和执行记录。
 
-Agent 查询、会话、SSE 和图表功能尚未实现。健康检查和配置引导页无需 PostgreSQL 或 Qwen API Key 即可启动；浏览结构需要初始化 PostgreSQL，整个数据准备流程无需模型 Key。健康检查只表示后端进程可响应，不代表数据库或模型已连接。
+当前每个问题独立分析，会话用于保存历史；关键歧义返回澄清提示，补充问题后重新提交。SSE、取消、多轮条件继承、图表和结果总结尚未实现。健康检查和配置引导无需 PostgreSQL 或 Qwen API Key；浏览结构需要 PostgreSQL，问数还需要应用库及模型 Key。健康检查只表示后端进程可响应，不代表数据库或模型已连接。
 
 详细规划见 [项目设计](docs/project-design.md)，模块约定见 [项目结构](docs/project-structure.md)。
 
@@ -157,7 +161,7 @@ python -m app.cli db init
 python -m app.cli business generate --days 365 --orders 10000 --seed 42
 ```
 
-`db init` 可重复执行，不删除已有数据。它拒绝接管属于其他账号的数据库或未标记为本项目管理的同名业务 Schema；创建 `datasource_metadata` 应用表、checkpoint 表，以及 `whitebear_business` Schema 中的六张业务表和一张生成摘要表。会话与运行记录表随下一阶段功能添加。
+`db init` 可重复执行，不删除已有数据。它拒绝接管属于其他账号的数据库或未标记为本项目管理的同名业务 Schema；创建元数据、会话、消息及运行记录应用表、checkpoint 表，以及 `whitebear_business` Schema 中的六张业务表和一张生成摘要表。已有第一阶段数据库可执行 `python -m alembic upgrade head` 升级到迁移 `0002`，保留业务数据。
 
 生成命令默认采用上海当前时间，输出各表行数、覆盖范围及最近 30 天支付订单和销售额。支持 1 至 3650 天、2 至 100000 笔订单。固定参数可复现业务数据；真实生成时间单独记录：
 
@@ -179,6 +183,12 @@ python -m app.cli business generate --as-of 2026-10-08T12:00:00+08:00 --seed 42 
 | `PATCH /api/v1/datasources/business/metadata` | 保存表和字段的业务说明 |
 
 结构读取使用只读事务和超时；未配置或连接失败时返回可理解的 503 响应。结构同步和说明编辑需要已迁移的应用库。自有数据源配置接入将在后续扩展。
+
+### 单轮问数
+
+配置 `QWEN_API_KEY`、模型名和 API 地址，完成迁移后，在工作台“问数分析”页提交“最近 30 天的实付销售额和支付订单数”。模型获得允许的结构、业务说明和指标口径，生成 SQL 后先校验再执行。运行结果会保存，可在历史会话中重新查看。
+
+第二阶段接口使用普通 JSON：`POST /api/v1/conversations` 创建会话，`GET /api/v1/conversations` 列出历史，`POST /api/v1/conversations/{id}/messages` 提交问题，`GET /api/v1/conversations/{id}` 和 `GET /api/v1/runs/{id}` 读取记录。生成、执行失败返回带错误码的运行记录；未配置模型或应用库不可用返回 503。详见 [查询流程与接口](docs/query-workflow.md)。
 
 ### 应用模型迁移与前端类型
 
