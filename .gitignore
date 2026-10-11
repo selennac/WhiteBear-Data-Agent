@@ -26,8 +26,8 @@ test-results/
 # Local data and tools
 .tools/
 *.log
-demo/generated/*
-!demo/generated/.gitkeep
+business/generated/*
+!business/generated/.gitkeep
 evals/reports/*
 !evals/reports/.gitkeep
 

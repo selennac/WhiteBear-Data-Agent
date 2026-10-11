@@ -16,7 +16,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         description="WhiteBearDataAgent 本地 TextToSQL 工作台 API。",
         version=__version__,
     )
-    application.state.settings = config
+    # Web requests only receive runtime credentials; provisioning remains CLI-only.
+    application.state.settings = config.model_copy(
+        update={"admin_database_url": None, "business_database_url": None}
+    )
     application.include_router(api_router, prefix="/api/v1")
 
     # Register the UI last so API and documentation routes take precedence.

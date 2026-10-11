@@ -10,6 +10,20 @@ permissions:
 jobs:
   backend:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: whitebear_ci_admin
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      WHITEBEAR_TEST_ADMIN_URL: postgresql+psycopg://postgres:whitebear_ci_admin@127.0.0.1:5432/postgres
     defaults:
       run:
         working-directory: backend
@@ -28,6 +42,7 @@ jobs:
       - run: python -m ruff format --check .
       - run: python -m mypy
       - run: python -m pytest
+      - run: python ../scripts/generate_api_types.py --check
 
   frontend:
     runs-on: ubuntu-latest

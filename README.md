@@ -6,15 +6,19 @@ A local TextToSQL workspace for learning and open-source demos, built with FastA
 
 ## 当前状态
 
-当前完成项目基础结构：
+当前已完成可运行的工程基础和数据准备流程：
 
 - FastAPI 应用、环境配置、健康检查、OpenAPI 文档和配置状态 CLI。
 - Vue 3 + TypeScript + Vite 页面、Pinia 状态、自定义按钮和 CSS 设计变量。
 - 开发 API 代理、前端构建后的 FastAPI 同域托管。
-- Alembic 迁移环境、后端模块边界、示例数据与评测目录。
+- Alembic 迁移环境、后端模块边界、业务数据与评测目录。
 - Ruff、mypy、pytest、ESLint、Prettier、Vitest 和 GitHub Actions。
+- 数据库初始化 CLI：独立应用库、业务库、受限访问账号、应用迁移和 LangGraph checkpoint。
+- 可复现电商业务数据：六张业务表、近期订单、金额及退款约束、受控重置。
+- 数据源结构接口、应用内业务说明持久化、版本化指标口径 YAML。
+- 前端数据结构页：字段、关联关系、业务说明编辑和生成数据覆盖范围。
 
-数据库初始化、动态示例数据生成、数据源接口、Agent 查询、会话、SSE 和图表功能尚未实现。基础服务无需 PostgreSQL 或 Qwen API Key 即可启动。健康检查只表示后端进程可响应，不代表数据库或模型已连接。
+Agent 查询、会话、SSE 和图表功能尚未实现。健康检查和配置引导页无需 PostgreSQL 或 Qwen API Key 即可启动；浏览结构需要初始化 PostgreSQL，整个数据准备流程无需模型 Key。健康检查只表示后端进程可响应，不代表数据库或模型已连接。
 
 详细规划见 [项目设计](docs/project-design.md)，模块约定见 [项目结构](docs/project-structure.md)。
 
@@ -33,7 +37,7 @@ WhiteBearDataAgent/
 │   │   ├── llm/               # 模型适配
 │   │   ├── db/models/         # SQLAlchemy 应用模型
 │   │   ├── repositories/      # 持久化访问
-│   │   ├── demo/              # 示例数据生成模块
+│   │   ├── business/          # 业务数据生成模块
 │   │   ├── cli.py             # 本地管理入口
 │   │   └── main.py            # FastAPI 入口
 │   ├── migrations/            # Alembic 迁移
@@ -53,7 +57,7 @@ WhiteBearDataAgent/
 │   ├── public/
 │   ├── package.json
 │   └── package-lock.json
-├── demo/                     # 业务口径和生成数据
+├── business/                 # 业务口径和生成数据
 ├── evals/                    # 固定问题与评测报告
 ├── tests/e2e/                # 后续端到端测试
 ├── scripts/                  # 开发辅助脚本
@@ -133,14 +137,66 @@ npm run dev
 python -m app.cli info
 ```
 
-Alembic 已接入应用模型元数据，当前没有业务表迁移。后续添加模型后，可以在 `backend/` 使用：
+### 初始化数据库与业务数据
+
+安装并启动 PostgreSQL 16 或以上版本，在 `backend/.env` 配置以下四个连接串。管理账号必须已存在且具有创建数据库及角色的权限，其余三个项目账号由初始化命令创建。替换示例密码，密码包含特殊字符时使用 URL 编码：
+
+```dotenv
+ADMIN_DATABASE_URL=postgresql+psycopg://postgres:change_me_admin@127.0.0.1:5432/postgres
+APP_DATABASE_URL=postgresql+psycopg://whitebear_app:change_me_app@127.0.0.1:5432/whitebear_app
+BUSINESS_DATABASE_URL=postgresql+psycopg://whitebear_business_owner:change_me_owner@127.0.0.1:5432/whitebear_business
+BUSINESS_READONLY_DATABASE_URL=postgresql+psycopg://whitebear_business_reader:change_me_reader@127.0.0.1:5432/whitebear_business
+```
+
+四个账号必须独立、指向同一主机和端口；管理库、应用库和业务库必须独立，业务属主和只读账号指向同一业务库。数据库及账号名使用小写英文、数字和下划线，最多 63 位。连接串使用 `postgresql+psycopg`，不支持查询参数。`ADMIN_DATABASE_URL` 和 `BUSINESS_DATABASE_URL`（业务属主）仅供 CLI 使用，HTTP 应用状态只保留运行凭据。
+
+在 `backend/` 激活虚拟环境后执行：
+
+```bash
+python -m app.cli db init
+python -m app.cli business generate --days 365 --orders 10000 --seed 42
+```
+
+`db init` 可重复执行，不删除已有数据。它拒绝接管属于其他账号的数据库或未标记为本项目管理的同名业务 Schema；创建 `datasource_metadata` 应用表、checkpoint 表，以及 `whitebear_business` Schema 中的六张业务表和一张生成摘要表。会话与运行记录表随下一阶段功能添加。
+
+生成命令默认采用上海当前时间，输出各表行数、覆盖范围及最近 30 天支付订单和销售额。支持 1 至 3650 天、2 至 100000 笔订单。固定参数可复现业务数据；真实生成时间单独记录：
+
+```bash
+python -m app.cli business generate --as-of 2026-10-08T12:00:00+08:00 --seed 42 --reset
+```
+
+已有数据时命令退出；只有显式 `--reset` 才替换数据。重置在一个事务内执行，仅删除带项目标记的业务 Schema 中七张受管表的行，不删除 Schema、表或其他数据。发生约束错误时回滚。初始化和生成完成后，在工作台点击“同步结构”查看数据并保存结构快照。编辑业务说明写入应用库，不修改业务数据库注释。
+
+### 数据源接口
+
+当前支持一个内置电商数据源 `business`，不返回连接凭据：
+
+| 接口 | 功能 |
+|---|---|
+| `GET /api/v1/datasources` | 查看配置状态，无需连接数据库 |
+| `GET /api/v1/datasources/business/schema` | 只读获取六张表、字段、关联、指标及数据摘要 |
+| `POST /api/v1/datasources/business/sync` | 刷新并保存结构快照，保留已有说明 |
+| `PATCH /api/v1/datasources/business/metadata` | 保存表和字段的业务说明 |
+
+结构读取使用只读事务和超时；未配置或连接失败时返回可理解的 503 响应。结构同步和说明编辑需要已迁移的应用库。自有数据源配置接入将在后续扩展。
+
+### 应用模型迁移与前端类型
+
+后续添加应用模型后，可以在 `backend/` 使用：
 
 ```bash
 python -m alembic revision --autogenerate -m "describe the change"
 python -m alembic upgrade head
 ```
 
-迁移需要已经存在的应用数据库和有效的 `APP_DATABASE_URL`，连接串格式为 `postgresql+psycopg://user:password@127.0.0.1:5432/whitebear_app`。数据库、账号和 checkpoint 初始化，以及设计文档中的 `demo generate` 命令，将在后续阶段实现。
+迁移需要已经存在的应用数据库和有效的 `APP_DATABASE_URL`。业务表独立于应用迁移，checkpoint 由初始化 CLI 单独管理。
+
+接口契约变更后，在项目根目录使用后端虚拟环境的 Python 生成前端类型：
+
+```bash
+python scripts/generate_api_types.py
+python scripts/generate_api_types.py --check
+```
 
 ## 开发检查
 
@@ -162,7 +218,16 @@ npm test
 npm run build
 ```
 
-CI 执行以上检查。目前测试不依赖数据库或真实模型，后续随业务实现补充 PostgreSQL 集成测试和 Playwright 端到端测试。
+CI 执行以上检查、OpenAPI 类型一致性检查及 PostgreSQL 16 集成测试。普通本地 pytest 在未配置测试管理连接时跳过数据库集成测试；集成测试不使用项目运行配置，会创建随机名称的临时数据库和账号，结束后清理。
+
+需要本地运行 PostgreSQL 集成测试时，显式配置已有测试管理员连接（必须使用 `postgresql+psycopg`）：
+
+```powershell
+$env:WHITEBEAR_TEST_ADMIN_URL = 'postgresql+psycopg://postgres:your_test_password@127.0.0.1:5432/postgres'
+python -m pytest
+```
+
+Linux/macOS 使用 `export WHITEBEAR_TEST_ADMIN_URL='...'`。当前测试验证数据时间与金额约束、可复现性、初始化重复执行、只读权限、说明持久化及重置范围，无需真实模型。
 
 ## 依赖管理
 

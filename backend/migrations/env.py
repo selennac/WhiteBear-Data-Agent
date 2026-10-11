@@ -17,6 +17,9 @@ target_metadata = Base.metadata
 
 
 def database_url() -> str:
+    supplied = config.attributes.get("database_url")
+    if isinstance(supplied, str):
+        return supplied
     value = Settings().app_database_url
     if value is None:
         raise RuntimeError("请先在 backend/.env 配置 APP_DATABASE_URL，再执行数据库迁移。")

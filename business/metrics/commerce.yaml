@@ -1,0 +1,31 @@
+version: "1"
+default_time_range_days: 30
+metrics:
+  - id: paid_sales
+    label: 实付销售额
+    description: 按订单支付时间归属，汇总已支付订单的明细实付金额；不扣减退款。
+    expression: SUM(order_items.paid_amount)
+    time_column: orders.paid_at
+    grain: order_items
+    aliases: [销售额, 实付金额, GMV]
+  - id: paid_orders
+    label: 支付订单数
+    description: 筛选已支付订单并按订单编号去重；关联明细后不可直接 COUNT(*)。
+    expression: COUNT(DISTINCT orders.id)
+    time_column: orders.paid_at
+    grain: orders
+    aliases: [订单数, 成交订单数]
+  - id: average_order_value
+    label: 客单价
+    description: 实付销售额除以支付订单数；订单数为零时返回 NULL。
+    expression: SUM(order_items.paid_amount) / NULLIF(COUNT(DISTINCT orders.id), 0)
+    time_column: orders.paid_at
+    grain: orders
+    aliases: [平均订单金额]
+  - id: successful_refunds
+    label: 成功退款额
+    description: 筛选 status = 'success'，按退款成功时间汇总退款金额，时间归属与销售额不同。
+    expression: SUM(refunds.amount)
+    time_column: refunds.succeeded_at
+    grain: refunds
+    aliases: [退款额, 已退款金额]

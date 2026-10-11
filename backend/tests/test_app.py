@@ -23,3 +23,16 @@ def test_built_frontend_does_not_shadow_api(tmp_path: Path) -> None:
         assert client.get("/").text == "<html>Workspace</html>"
         assert client.get("/api/v1/health").json()["status"] == "ok"
         assert client.get("/api/v1/missing").status_code == 404
+
+
+def test_http_application_discards_cli_credentials(tmp_path: Path) -> None:
+    settings = Settings(
+        _env_file=None,
+        frontend_dist=tmp_path,
+        admin_database_url="postgresql+psycopg://admin:secret@localhost/postgres",
+        business_database_url="postgresql+psycopg://owner:secret@localhost/business",
+    )
+    app = create_app(settings)
+    assert app.state.settings.admin_database_url is None
+    assert app.state.settings.business_database_url is None
+    assert settings.admin_database_url is not None

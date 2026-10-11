@@ -1,4 +1,4 @@
-"""Environment configuration; the scaffold does not require external services."""
+"""Environment configuration; basic health checks do not require external services."""
 
 from pathlib import Path
 from typing import Literal
@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     app_env: Literal["development", "test", "production"] = "development"
     timezone: str = "Asia/Shanghai"
     app_database_url: SecretStr | None = None
+    business_readonly_database_url: SecretStr | None = None
+    # Administrative and business-owner credentials are only used by the CLI.
+    admin_database_url: SecretStr | None = None
     business_database_url: SecretStr | None = None
     qwen_model: str = "qwen3.7-plus"
     qwen_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
