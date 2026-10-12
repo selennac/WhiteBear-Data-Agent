@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   cancelRun,
   createConversation,
+  deleteConversation,
   getConversation,
   getConversations,
   streamQuestion,
@@ -14,6 +15,7 @@ import { useAnalysisStore } from './analysis'
 vi.mock('../services/api', () => ({
   cancelRun: vi.fn(),
   createConversation: vi.fn(),
+  deleteConversation: vi.fn(),
   getConversation: vi.fn(),
   getConversations: vi.fn(),
   streamQuestion: vi.fn(),
@@ -65,6 +67,7 @@ describe('streaming analysis state', () => {
       '订单数',
       expect.any(Function),
       expect.any(AbortSignal),
+      undefined,
     )
     expect(state.selectedRun).toEqual({ ...run, id: 'run-2', question: '销售额' })
     expect(state.runs).toHaveLength(2)
@@ -224,6 +227,95 @@ describe('streaming analysis state', () => {
     finish(run)
     await pending
   })
+})
+
+it('uses an explicit older result as the next context and advances after success', async () => {
+  setActivePinia(createPinia())
+  const first: AnalysisRun = { ...run, id: 'first', draft: { action: 'query', sql: 'SELECT 1' } }
+  const latest: AnalysisRun = { ...first, id: 'latest', question: '最近7天' }
+  const state = useAnalysisStore()
+  state.conversationId = conversation.id
+  state.runs = [first, latest]
+  state.selectedRun = first
+  expect(state.continuation?.id).toBe(latest.id)
+  expect(state.followUpFrom(first)).toBe(true)
+  vi.mocked(streamQuestion).mockResolvedValue({ ...first, id: 'branch', question: '按品类' })
+  await state.submit('按品类')
+  expect(streamQuestion).toHaveBeenLastCalledWith(
+    conversation.id,
+    '按品类',
+    expect.any(Function),
+    expect.any(AbortSignal),
+    first.id,
+  )
+  expect(state.continuation?.id).toBe('branch')
+})
+
+it('keeps progress and cancellation on the active run while viewing an older result', async () => {
+  setActivePinia(createPinia())
+  const state = useAnalysisStore()
+  state.conversationId = conversation.id
+  state.runs = [{ ...run, id: 'old' }]
+  state.selectedRun = state.runs[0]!
+  let finish!: (value: AnalysisRun) => void
+  vi.mocked(streamQuestion).mockImplementationOnce((_id, _question, receive) => {
+    receive({
+      type: 'run_started',
+      run_id: run.id,
+      run: {
+        ...run,
+        status: 'running',
+        result: null,
+        steps: [{ node: 'execute_query', status: 'running', attempt: 1, elapsed_ms: 0 }],
+      },
+    })
+    return new Promise((resolve) => {
+      finish = resolve
+    })
+  })
+  const pending = state.submit('订单数')
+  await vi.waitFor(() => expect(state.sending).toBe(true))
+  state.selectedRun = state.runs[0]!
+  expect(state.progress).toContain('执行只读查询')
+  vi.mocked(cancelRun).mockImplementationOnce(async () => {
+    const stopped = { ...run, status: 'cancelled' as const }
+    finish(stopped)
+    return stopped
+  })
+  await state.stop()
+  await pending
+  expect(cancelRun).toHaveBeenCalledWith(run.id)
+  expect(state.selectedRun.id).toBe('old')
+  expect(state.runs[1]?.status).toBe('cancelled')
+})
+
+it('deletes only the requested conversation and clears an active deleted conversation', async () => {
+  setActivePinia(createPinia())
+  vi.mocked(deleteConversation).mockResolvedValue(undefined)
+  const state = useAnalysisStore()
+  state.conversations = [conversation, { ...conversation, id: 'other' }]
+  state.conversationId = conversation.id
+  state.runs = [run]
+  state.selectedRun = run
+  expect(await state.removeConversation('other')).toBe(true)
+  expect(state.selectedRun).toEqual(run)
+  expect(await state.removeConversation(conversation.id)).toBe(true)
+  expect(state.conversations).toEqual([])
+  expect(state.conversationId).toBeNull()
+  expect(state.selectedRun).toBeNull()
+})
+
+it('retains history after a delete failure and blocks deletion during analysis', async () => {
+  setActivePinia(createPinia())
+  const state = useAnalysisStore()
+  state.conversations = [conversation]
+  vi.mocked(deleteConversation).mockRejectedValueOnce(new Error('删除失败'))
+  expect(await state.removeConversation(conversation.id)).toBe(false)
+  expect(state.conversations).toHaveLength(1)
+  expect(state.error).toBe('删除失败')
+  state.sending = true
+  expect(await state.removeConversation(conversation.id)).toBe(false)
+  expect(deleteConversation).toHaveBeenCalledTimes(1)
 })
 
 it('receives chart and summary before the saved terminal event and restores them from history', async () => {

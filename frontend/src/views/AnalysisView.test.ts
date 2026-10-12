@@ -2,7 +2,13 @@ import { createPinia } from 'pinia'
 import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, expect, it, vi } from 'vitest'
 
-import { cancelRun, createConversation, getConversations, streamQuestion } from '../services/api'
+import {
+  cancelRun,
+  createConversation,
+  deleteConversation,
+  getConversations,
+  streamQuestion,
+} from '../services/api'
 import type { AnalysisRun } from '../types/api'
 import AnalysisView from './AnalysisView.vue'
 import { useAnalysisStore } from '../stores/analysis'
@@ -10,6 +16,7 @@ import { useAnalysisStore } from '../stores/analysis'
 vi.mock('../services/api', () => ({
   cancelRun: vi.fn(),
   createConversation: vi.fn(),
+  deleteConversation: vi.fn(),
   getConversations: vi.fn(),
   getConversation: vi.fn(),
   streamQuestion: vi.fn(),
@@ -17,6 +24,22 @@ vi.mock('../services/api', () => ({
 
 beforeEach(() => {
   vi.resetAllMocks()
+  vi.stubGlobal(
+    'matchMedia',
+    vi.fn((query: string) => ({
+      matches: query.includes('min-width'),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    })),
+  )
+  vi.stubGlobal(
+    'ResizeObserver',
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  )
   vi.mocked(getConversations).mockResolvedValue([])
 })
 
@@ -62,7 +85,7 @@ it('renders progress, stops analysis and enables the next submission', async () 
   const stop = view.findAll('button').find((button) => button.text() === '停止分析')
   expect(stop).toBeDefined()
   await stop!.trigger('click')
-  await vi.waitFor(() => expect(view.get('.badge').text()).toBe('已停止'))
+  await vi.waitFor(() => expect(view.get('.turn .badge').text()).toBe('已停止'))
   expect(view.get('textarea').attributes('disabled')).toBeUndefined()
   expect(view.text()).toContain('可以提交新问题')
   view.unmount()
@@ -138,6 +161,7 @@ it('continues a clarification with a short answer and displays the complete cond
     '用客户区域',
     expect.any(Function),
     expect.any(AbortSignal),
+    pending.id,
   )
   const conditions = view.get('[aria-label="本轮分析口径"]').text()
   expect(conditions).toContain('接续澄清')
@@ -205,14 +229,96 @@ it('restores summaries from history, escapes text and retains tables after summa
       limitations: ['只依据已返回数据。'],
     },
   }
+  state.runs = [run]
   state.selectedRun = run
   await flushPromises()
   expect(view.get('[aria-label="结果总结"]').text()).toContain('销售额为123.45')
   expect(view.get('[aria-label="结果总结"]').find('script').exists()).toBe(false)
   expect(view.get('td').text()).toBe('123.45')
-  state.selectedRun = { ...run, summary: null, summary_error: '总结超过30秒，查询结果已保留。' }
+  state.runs = [{ ...run, summary: null, summary_error: '总结超过 90 秒，查询结果已保留。' }]
+  state.selectedRun = state.runs[0]!
   await flushPromises()
   expect(view.get('[aria-label="结果总结"]').text()).toContain('查询结果已保留')
   expect(view.get('td').text()).toBe('123.45')
+  view.unmount()
+})
+
+it('switches the follow-up source explicitly, keeps the transcript and sends with Enter', async () => {
+  const pinia = createPinia()
+  const view = mount(AnalysisView, { global: { plugins: [pinia] } })
+  await flushPromises()
+  const state = useAnalysisStore(pinia)
+  const first: AnalysisRun = {
+    id: 'first',
+    conversation_id: 'conversation-1',
+    question: '最近30天',
+    status: 'succeeded',
+    created_at: '2026-10-12T12:00:00+08:00',
+    reference_time: '2026-10-12T12:00:00+08:00',
+    draft: { action: 'query', sql: 'SELECT 1' },
+  }
+  state.conversationId = first.conversation_id
+  state.runs = [first, { ...first, id: 'latest', question: '最近7天' }]
+  state.selectedRun = first
+  await flushPromises()
+  expect(view.findAll('.turn')).toHaveLength(2)
+  expect(view.get('.continuation').text()).toContain('最近7天')
+  await view.get('.result-area .continue-button').trigger('click')
+  expect(view.get('.continuation').text()).toContain('最近30天')
+  vi.mocked(streamQuestion).mockResolvedValue({ ...first, id: 'branch', question: '按品类' })
+  await view.get('textarea').setValue('按品类')
+  await view.get('textarea').trigger('keydown', { key: 'Enter', isComposing: true })
+  await view.get('textarea').trigger('keydown', { key: 'Enter', shiftKey: true })
+  expect(streamQuestion).not.toHaveBeenCalled()
+  await view.get('textarea').trigger('keydown', { key: 'Enter' })
+  await flushPromises()
+  expect(streamQuestion).toHaveBeenLastCalledWith(
+    first.conversation_id,
+    '按品类',
+    expect.any(Function),
+    expect.any(AbortSignal),
+    first.id,
+  )
+  expect(view.findAll('.turn')).toHaveLength(3)
+  view.unmount()
+})
+
+it('requires confirmation before deleting and keeps the dialog open on failure', async () => {
+  const conversation = {
+    id: 'conversation-1',
+    title: '销售探索',
+    datasource_id: 'business' as const,
+    created_at: '2026-10-12T12:00:00+08:00',
+  }
+  vi.mocked(getConversations).mockResolvedValue([conversation])
+  const view = mount(AnalysisView, {
+    attachTo: document.body,
+    global: { plugins: [createPinia()] },
+  })
+  await flushPromises()
+  await view.get('[aria-label="删除会话：销售探索"]').trigger('click')
+  await flushPromises()
+  expect(deleteConversation).not.toHaveBeenCalled()
+  const cancel = [...document.querySelectorAll('button')].find(
+    (button) => button.textContent === '取消',
+  )!
+  cancel.click()
+  await flushPromises()
+  expect(document.querySelector('[role="alertdialog"]')).toBeNull()
+  await view.get('[aria-label="删除会话：销售探索"]').trigger('click')
+  await flushPromises()
+  vi.mocked(deleteConversation)
+    .mockRejectedValueOnce(new Error('数据库暂不可用'))
+    .mockResolvedValueOnce(undefined)
+  const confirm = () =>
+    [...document.querySelectorAll('button')].find((button) => button.textContent === '确认删除')!
+  confirm().click()
+  await flushPromises()
+  expect(document.querySelector('[role="alertdialog"]')?.textContent).toContain('数据库暂不可用')
+  expect(view.find('.history-item').exists()).toBe(true)
+  confirm().click()
+  await flushPromises()
+  expect(deleteConversation).toHaveBeenLastCalledWith(conversation.id)
+  expect(view.find('.history-item').exists()).toBe(false)
   view.unmount()
 })

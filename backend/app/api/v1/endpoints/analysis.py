@@ -6,7 +6,7 @@ from typing import NoReturn
 from uuid import UUID
 
 import anyio
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
@@ -16,8 +16,10 @@ from app.core.async_work import finish_task, run_blocking
 from app.db.connections import DatabaseConfigurationError
 from app.llm.query import ModelError
 from app.repositories.analysis import (
+    InvalidContextError,
     RecordNotFoundError,
     create_conversation,
+    delete_conversation,
     get_conversation,
     get_run,
     list_conversations,
@@ -37,7 +39,7 @@ router = APIRouter(tags=["analysis"])
 
 
 def http_error(error: Exception) -> NoReturn:
-    if isinstance(error, RunBusyError):
+    if isinstance(error, (RunBusyError, InvalidContextError)):
         raise HTTPException(status_code=409, detail=str(error)) from None
     if isinstance(error, RecordNotFoundError):
         raise HTTPException(status_code=404, detail=str(error)) from None
@@ -75,6 +77,27 @@ def conversation(conversation_id: UUID, request: Request) -> ConversationDetail:
     return operation(lambda: get_conversation(request.app.state.settings, conversation_id))
 
 
+@router.delete("/conversations/{conversation_id}", status_code=204, response_class=Response)
+async def remove_conversation(conversation_id: UUID, request: Request) -> Response:
+    manager: RunManager = request.app.state.runs
+    try:
+        manager.reserve(conversation_id)
+        try:
+            await finish_task(
+                asyncio.create_task(
+                    run_blocking(
+                        operation,
+                        lambda: delete_conversation(request.app.state.settings, conversation_id),
+                    )
+                )
+            )
+        finally:
+            manager.conversations.discard(conversation_id)
+    except Exception as error:
+        http_error(error)
+    return Response(status_code=204)
+
+
 @router.post("/conversations/{conversation_id}/messages", response_model=AnalysisRun)
 async def message(conversation_id: UUID, body: MessageCreate, request: Request) -> AnalysisRun:
     # Keep the original JSON contract available for scripts and API clients.
@@ -82,7 +105,9 @@ async def message(conversation_id: UUID, body: MessageCreate, request: Request) 
     try:
         manager.reserve(conversation_id)
         try:
-            return await analyze(request.app.state.settings, conversation_id, body.question)
+            return await analyze(
+                request.app.state.settings, conversation_id, body.question, body.context_run_id
+            )
         finally:
             manager.conversations.discard(conversation_id)
     except Exception as error:
@@ -130,7 +155,9 @@ async def stream_message(
 ) -> AnalysisStreamResponse:
     manager: RunManager = request.app.state.runs
     try:
-        active = await manager.start(request.app.state.settings, conversation_id, body.question)
+        active = await manager.start(
+            request.app.state.settings, conversation_id, body.question, body.context_run_id
+        )
     except Exception as error:
         http_error(error)
     return AnalysisStreamResponse(manager, active)

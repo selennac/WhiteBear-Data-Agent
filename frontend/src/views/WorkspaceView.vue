@@ -1,11 +1,14 @@
 <script setup lang="ts">
 import { Database } from 'lucide-vue-next'
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useSystemStore } from '../stores/system'
 import DataStructureView from './DataStructureView.vue'
 import AnalysisView from './AnalysisView.vue'
 const system = useSystemStore()
 const page = ref<'analysis' | 'schema'>('analysis')
+const header = ref<HTMLElement | null>(null)
+const headerHeight = ref(85)
+let headerObserver: ResizeObserver | null = null
 const statusText = computed(() => {
   switch (system.status) {
     case 'connected':
@@ -18,11 +21,18 @@ const statusText = computed(() => {
       return '等待连接'
   }
 })
-onMounted(() => void system.checkHealth())
+onMounted(() => {
+  void system.checkHealth()
+  headerObserver = new ResizeObserver(([entry]) => {
+    if (entry) headerHeight.value = entry.target.getBoundingClientRect().height
+  })
+  if (header.value) headerObserver.observe(header.value)
+})
+onBeforeUnmount(() => headerObserver?.disconnect())
 </script>
 <template>
-  <div class="workspace">
-    <header class="header">
+  <div class="workspace" :style="{ '--workspace-header-height': `${headerHeight}px` }">
+    <header ref="header" class="header">
       <a class="brand" href="/" aria-label="WhiteBearDataAgent 首页">
         <span class="brand-mark"><Database :size="22" aria-hidden="true" /></span>
         <span>WhiteBear<span class="brand-light">DataAgent</span></span>

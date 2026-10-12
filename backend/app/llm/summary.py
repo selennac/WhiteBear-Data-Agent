@@ -76,14 +76,15 @@ async def generate_summary(
     context = summary_context(draft, result, schema)
     if context["sample_clipped"]:
         limitations.append("样本中的长文本、额外列或超出大小限制的行已省略。")
-    async with httpx.AsyncClient(timeout=30) as client:
+    timeout = settings.llm_summary_timeout_seconds
+    async with httpx.AsyncClient(timeout=timeout) as client:
         model = ChatOpenAI(
             model=settings.qwen_model,
             base_url=settings.qwen_base_url,
             api_key=settings.qwen_api_key,
             http_async_client=client,
             temperature=0,
-            timeout=30,
+            timeout=timeout,
             max_retries=0,
             max_completion_tokens=2048,
         )
@@ -112,7 +113,9 @@ async def generate_summary(
                 "summary_output_invalid", "模型未返回有效总结，查询结果已保留。"
             ) from None
         except APITimeoutError:
-            raise ModelError("summary_timeout", "总结超过 30 秒，查询结果已保留。") from None
+            raise ModelError(
+                "summary_timeout", f"总结超过 {timeout:g} 秒，查询结果已保留。"
+            ) from None
         except AuthenticationError:
             raise ModelError(
                 "summary_authentication_failed", "模型认证失败，总结暂不可用，查询结果已保留。"

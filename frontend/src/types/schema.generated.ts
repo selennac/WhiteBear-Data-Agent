@@ -36,6 +36,7 @@ export interface AnalysisRun {
   schema_version?: string
   prompt_version?: string
   model?: string
+  context_run_id?: string | null
   input_context?: ConversationContext
   draft?: QueryDraft | null
   result?: QueryResult | null
@@ -143,6 +144,7 @@ export interface HealthResponse {
 
 export interface MessageCreate {
   question: string
+  context_run_id?: string | null
 }
 
 export interface MetadataPatch {

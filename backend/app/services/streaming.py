@@ -64,10 +64,16 @@ class RunManager:
             raise RunBusyError("该会话已有运行中的分析，请先停止或等待完成。")
         self.conversations.add(conversation_id)
 
-    async def start(self, settings: Settings, conversation_id: UUID, question: str) -> ActiveRun:
+    async def start(
+        self,
+        settings: Settings,
+        conversation_id: UUID,
+        question: str,
+        context_run_id: UUID | None = None,
+    ) -> ActiveRun:
         self.reserve(conversation_id)
         try:
-            active = ActiveRun(new_run(settings, conversation_id, question))
+            active = ActiveRun(new_run(settings, conversation_id, question, context_run_id))
         except Exception:
             self.conversations.discard(conversation_id)
             raise

@@ -27,6 +27,7 @@ async function request<T>(path: string, options: RequestInit = {}, timeoutMs = 2
         : `请求失败（HTTP ${response.status}）`
     throw new Error(detail)
   }
+  if (response.status === 204) return undefined as T
   return response.json() as Promise<T>
 }
 
@@ -45,10 +46,12 @@ export const getConversations = (offset = 0) =>
 export const createConversation = (signal?: AbortSignal) =>
   request<ConversationSummary>('/conversations', { method: 'POST', body: '{}', signal })
 export const getConversation = (id: string) => request<ConversationDetail>(`/conversations/${id}`)
-export const sendQuestion = (id: string, question: string) =>
+export const deleteConversation = (id: string) =>
+  request<void>(`/conversations/${id}`, { method: 'DELETE' })
+export const sendQuestion = (id: string, question: string, contextRunId?: string) =>
   request<AnalysisRun>(
     `/conversations/${id}/messages`,
-    { method: 'POST', body: JSON.stringify({ question }) },
+    { method: 'POST', body: JSON.stringify({ question, context_run_id: contextRunId }) },
     300000,
   )
 
@@ -87,11 +90,12 @@ export async function streamQuestion(
   question: string,
   onEvent: (event: AnalysisEvent) => void,
   signal: AbortSignal,
+  contextRunId?: string,
 ): Promise<AnalysisRun> {
   const response = await fetch('/api/v1/conversations/' + id + '/messages/stream', {
     method: 'POST',
     headers: { Accept: 'text/event-stream', 'Content-Type': 'application/json' },
-    body: JSON.stringify({ question }),
+    body: JSON.stringify({ question, context_run_id: contextRunId }),
     signal: AbortSignal.any([signal, AbortSignal.timeout(300000)]),
   })
   if (!response.ok) {

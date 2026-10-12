@@ -11,7 +11,9 @@ from app.repositories.analysis import create_run, save_run
 from app.schemas.analysis import AnalysisRun
 
 
-def new_run(settings: Settings, conversation_id: UUID, question: str) -> AnalysisRun:
+def new_run(
+    settings: Settings, conversation_id: UUID, question: str, context_run_id: UUID | None = None
+) -> AnalysisRun:
     if settings.qwen_api_key is None:
         raise ModelError("model_unconfigured", "请在 backend/.env 配置 QWEN_API_KEY。")
     now = datetime.now(ZoneInfo("Asia/Shanghai"))
@@ -24,6 +26,7 @@ def new_run(settings: Settings, conversation_id: UUID, question: str) -> Analysi
         reference_time=now,
         prompt_version=PROMPT_VERSION,
         model=settings.qwen_model,
+        context_run_id=context_run_id,
     )
 
 
@@ -53,7 +56,9 @@ async def execute_run(
     return run
 
 
-async def analyze(settings: Settings, conversation_id: UUID, question: str) -> AnalysisRun:
-    run = new_run(settings, conversation_id, question)
+async def analyze(
+    settings: Settings, conversation_id: UUID, question: str, context_run_id: UUID | None = None
+) -> AnalysisRun:
+    run = new_run(settings, conversation_id, question, context_run_id)
     await finish_task(asyncio.create_task(run_blocking(create_run, settings, run)))
     return await execute_run(settings, run)

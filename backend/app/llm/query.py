@@ -15,7 +15,7 @@ from app.datasources.validation import ALLOWED_FUNCTIONS
 from app.schemas.analysis import ConversationContext, QueryDraft
 from app.schemas.datasource import DatasourceSchema
 
-PROMPT_VERSION = "query-v3"
+PROMPT_VERSION = "query-v4"
 SYSTEM_PROMPT = """你是 PostgreSQL 电商问数助手。只输出 QueryDraft JSON 对象。
 只查询当前上下文提供的业务表和字段。生成单条只读 SELECT；允许 JOIN、CTE、
 聚合、窗口函数，禁止写入、锁、系统表以及未允许的函数。SQL 使用完整 Schema 表名。
@@ -32,7 +32,8 @@ chart_intent 表示展示意图：时间趋势 line、分类比较 bar、明确�
 用户同时要求多个数值指标时用 bar，不将客单价、比率等不可加指标用于饼图。
 不输出 Markdown，不编造不存在的结构。修复请求也必须遵守以上规则。
 
-conversation_context 只包含本会话最近成功方案 previous 和成功之后最近待澄清方案 clarification。
+conversation_context 只包含供本轮接续的成功方案 previous 和待澄清方案 clarification。
+来源可能由用户从旧结果指定；只使用提供的来源，不自行改为其他轮次或补入其他分支的条件。
 先判定当前问题与历史的关系，填写 context_mode：
 - new：独立的新问题或明确的新话题，不沿用历史指标、筛选、分组或时间；缺省时间最近30天。
 - follow_up：如“按品类拆分”“改成最近7天”“只看上海”，基于 previous 的完整条件修改。
@@ -86,20 +87,21 @@ async def generate_draft(
         ),
         "output_schema": QueryDraft.model_json_schema(),
     }
-    async with httpx.AsyncClient(timeout=60) as client:
+    async with httpx.AsyncClient(timeout=settings.llm_query_timeout_seconds) as client:
         return await invoke_draft(settings, context, client)
 
 
 async def invoke_draft(
     settings: Settings, context: dict[str, Any], client: httpx.AsyncClient
 ) -> tuple[QueryDraft, dict[str, int]]:
+    timeout = settings.llm_query_timeout_seconds
     model = ChatOpenAI(
         model=settings.qwen_model,
         base_url=settings.qwen_base_url,
         api_key=settings.qwen_api_key,
         http_async_client=client,
         temperature=0,
-        timeout=60,
+        timeout=timeout,
         max_retries=0,
         max_completion_tokens=4096,
     )
@@ -124,7 +126,7 @@ async def invoke_draft(
     except ValidationError:
         raise ModelError("model_output_invalid", "模型未返回有效查询方案，请重试。") from None
     except APITimeoutError:
-        raise ModelError("model_timeout", "模型响应超过 60 秒，请稍后重试。") from None
+        raise ModelError("model_timeout", f"模型响应超过 {timeout:g} 秒，请稍后重试。") from None
     except AuthenticationError:
         raise ModelError(
             "model_authentication_failed", "模型认证失败，请检查 QWEN_API_KEY。"

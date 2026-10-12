@@ -1,609 +1,995 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref } from 'vue'
-
-import QueryResultTable from '../components/QueryResultTable.vue'
-
+import {
+  ArrowDown,
+  ArrowUp,
+  ArrowUpRight,
+  BarChart3,
+  Menu,
+  MessageSquare,
+  X,
+} from 'lucide-vue-next'
+import {
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogOverlay,
+  AlertDialogPortal,
+  AlertDialogRoot,
+  AlertDialogTitle,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogOverlay,
+  DialogPortal,
+  DialogRoot,
+  DialogTitle,
+} from 'reka-ui'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import AnalysisConditions from '../components/AnalysisConditions.vue'
+import AnalysisResultPanel from '../components/AnalysisResultPanel.vue'
+import AnalysisSidebar from '../components/AnalysisSidebar.vue'
 import BaseButton from '../components/ui/BaseButton.vue'
 import { useAnalysisStore } from '../stores/analysis'
+import type { AnalysisRun, ConversationSummary } from '../types/api'
+import { canContinue, statusLabels } from '../utils/analysis'
 
-const QueryResultChart = defineAsyncComponent(() => import('../components/QueryResultChart.vue'))
 const analysis = useAnalysisStore()
 const question = ref('')
+const questionInput = ref<HTMLTextAreaElement | null>(null)
+const messages = ref<HTMLElement | null>(null)
+const layout = ref<HTMLElement | null>(null)
+const followingLatest = ref(true)
+const expandedSummaries = ref<Set<string>>(new Set())
+const resultOpen = ref(false)
+const historyOpen = ref(false)
+const desktopQuery = window.matchMedia('(min-width: 1280px)')
+const mobileQuery = window.matchMedia('(max-width: 640px)')
+const isDesktop = ref(desktopQuery.matches)
+const isMobile = ref(mobileQuery.matches)
+const deleteTarget = ref<ConversationSummary | null>(null)
+const deleteOpen = ref(false)
+let deleteTrigger: HTMLElement | null = null
 const examples = [
   '最近 30 天的实付销售额和支付订单数',
   '最近 30 天每天的销售额趋势',
   '最近 30 天销售额最高的五个商品',
 ]
+const continuation = computed(() => analysis.continuation)
 const run = computed(() => analysis.selectedRun)
-const continuation = computed(() =>
-  [...analysis.runs]
-    .reverse()
-    .find((item) => ['succeeded', 'clarification_required'].includes(item.status) && item.draft),
+const conversationTitle = computed(
+  () =>
+    analysis.conversations.find((item) => item.id === analysis.conversationId)?.title || '新建分析',
 )
-const sourceTurn = computed(() => {
-  if (run.value?.draft?.context_mode === 'follow_up') return run.value.input_context?.previous
-  if (run.value?.draft?.context_mode === 'clarification')
-    return run.value.input_context?.clarification
-  return null
+const selectedTurn = computed(() =>
+  Math.max(1, analysis.runs.findIndex((item) => item.id === run.value?.id) + 1),
+)
+const continuationTurn = computed(
+  () => analysis.runs.findIndex((item) => item.id === continuation.value?.id) + 1,
+)
+const suggestions = computed(() => {
+  if (!continuation.value || continuation.value.status === 'clarification_required') return []
+  const group = continuation.value.draft?.group_by?.join(' ') || ''
+  return [
+    group.includes('品类') || group.includes('categor') ? '按商品拆分' : '按品类拆分',
+    '改成最近 7 天',
+    '按天查看趋势',
+  ]
 })
-const metricLabel: Record<string, string> = {
-  paid_sales: '实付销售额',
-  paid_orders: '支付订单数',
-  average_order_value: '客单价',
-  successful_refunds: '成功退款额',
+function resize() {
+  isDesktop.value = desktopQuery.matches
+  isMobile.value = mobileQuery.matches
+  if (isDesktop.value) resultOpen.value = false
+  if (!isMobile.value) historyOpen.value = false
 }
-const statusLabel = {
-  running: '运行中',
-  succeeded: '查询成功',
-  failed: '分析失败',
-  cancelled: '已停止',
-  clarification_required: '需要澄清',
+onMounted(() => {
+  void analysis.loadHistory()
+  desktopQuery.addEventListener('change', resize)
+  mobileQuery.addEventListener('change', resize)
+})
+onBeforeUnmount(() => {
+  analysis.disconnect()
+  desktopQuery.removeEventListener('change', resize)
+  mobileQuery.removeEventListener('change', resize)
+})
+function trackScroll() {
+  const element = messages.value
+  if (element)
+    followingLatest.value = element.scrollHeight - element.scrollTop - element.clientHeight < 100
 }
-const nodeLabel: Record<string, string> = {
-  load_context: '加载数据结构与业务口径',
-  generate_query: '生成查询方案',
-  validate_sql: '校验 SQL',
-  execute_query: '执行只读查询',
-  build_chart: '准备图表',
-  summarize_result: '总结查询结果',
+async function scrollLatest() {
+  await nextTick()
+  if (messages.value) messages.value.scrollTop = messages.value.scrollHeight
+  followingLatest.value = true
 }
-onMounted(() => void analysis.loadHistory())
-onBeforeUnmount(() => analysis.disconnect())
-
+watch(
+  () => analysis.conversationId,
+  () => void scrollLatest(),
+)
+watch(
+  () => analysis.runs.length,
+  () => {
+    if (followingLatest.value || analysis.sending) void scrollLatest()
+  },
+)
+watch(
+  () => [analysis.runs.at(-1)?.status, analysis.runs.at(-1)?.summary, analysis.progress],
+  () => {
+    if (followingLatest.value) void scrollLatest()
+  },
+)
 async function submit() {
-  await analysis.submit(question.value)
-  if (!analysis.error && analysis.selectedRun?.status !== 'running') question.value = ''
-}
-
-function answerClarification() {
+  const submitted = question.value.trim()
+  if (!submitted || analysis.busy) return
   question.value = ''
-  document.getElementById('analysis-question')?.focus()
+  followingLatest.value = true
+  await analysis.submit(submitted)
+  if (analysis.error && !question.value.trim()) question.value = submitted
+  await nextTick()
+  questionInput.value?.focus()
 }
-
+function keydown(event: KeyboardEvent) {
+  if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
+    event.preventDefault()
+    void submit()
+  }
+}
+function fillQuestion(value: string) {
+  question.value = value
+  questionInput.value?.focus()
+}
+function toggleSummary(id: string) {
+  if (expandedSummaries.value.has(id)) expandedSummaries.value.delete(id)
+  else expandedSummaries.value.add(id)
+}
+function viewResult(item: AnalysisRun) {
+  analysis.selectedRun = item
+  if (!isDesktop.value) resultOpen.value = true
+}
+async function continueFrom(item: AnalysisRun) {
+  if (!analysis.followUpFrom(item)) return
+  resultOpen.value = false
+  await nextTick()
+  questionInput.value?.focus()
+}
 function newAnalysis() {
   analysis.newConversation()
   question.value = ''
+  historyOpen.value = false
+  resultOpen.value = false
+  questionInput.value?.focus()
+}
+async function selectConversation(id: string) {
+  await analysis.selectConversation(id)
+  if (!analysis.error) {
+    question.value = ''
+    historyOpen.value = false
+    resultOpen.value = false
+  }
+}
+function requestDelete(conversation: ConversationSummary, trigger: HTMLElement) {
+  deleteTarget.value = conversation
+  deleteTrigger = trigger
+  deleteOpen.value = true
+}
+async function confirmDelete() {
+  if (!deleteTarget.value) return
+  const current = analysis.conversationId === deleteTarget.value.id
+  if (await analysis.removeConversation(deleteTarget.value.id)) {
+    deleteOpen.value = false
+    if (current) {
+      question.value = ''
+      resultOpen.value = false
+      historyOpen.value = false
+    }
+  }
+}
+function restoreDeleteFocus(event: Event) {
+  event.preventDefault()
+  if (deleteTrigger?.isConnected) deleteTrigger.focus()
+  else {
+    const focusTarget =
+      layout.value?.querySelector<HTMLButtonElement>('.new-analysis') ?? questionInput.value
+    focusTarget?.focus()
+  }
 }
 </script>
 
 <template>
-  <div class="analysis-layout">
-    <aside class="history" aria-label="历史分析">
-      <BaseButton :disabled="analysis.busy" @click="newAnalysis">新建分析</BaseButton>
-      <div class="history-heading">
-        <h2>历史会话</h2>
-        <button type="button" :disabled="analysis.busy" @click="analysis.loadHistory()">
-          刷新
+  <div ref="layout" class="analysis-layout" :class="{ 'with-result': isDesktop }">
+    <AnalysisSidebar
+      v-if="!isMobile"
+      class="sidebar"
+      @new="newAnalysis"
+      @select="selectConversation"
+      @remove="requestDelete"
+    />
+    <main class="conversation">
+      <header class="conversation-heading">
+        <button
+          v-if="isMobile"
+          type="button"
+          class="icon-button"
+          aria-label="打开历史会话"
+          @click="historyOpen = true"
+        >
+          <Menu :size="18" aria-hidden="true" />
         </button>
+        <div>
+          <h1>{{ conversationTitle }}</h1>
+          <span
+            >电商业务数据<span v-if="analysis.runs.length">
+              · {{ analysis.runs.length }} 轮分析</span
+            ></span
+          >
+        </div>
+        <button
+          v-if="!isDesktop && run"
+          type="button"
+          class="result-toggle"
+          @click="resultOpen = true"
+        >
+          <BarChart3 :size="16" aria-hidden="true" />查看结果
+        </button>
+      </header>
+      <div
+        ref="messages"
+        class="messages"
+        role="region"
+        aria-label="分析对话"
+        @scroll="trackScroll"
+      >
+        <section v-if="!analysis.runs.length && !analysis.sending" class="welcome">
+          <span class="welcome-icon"><MessageSquare :size="24" aria-hidden="true" /></span>
+          <h2>从一个问题开始探索数据</h2>
+          <p>查询销售、订单和退款，再继续追问、拆分维度或调整时间范围。</p>
+          <div class="examples">
+            <button
+              v-for="example in examples"
+              :key="example"
+              type="button"
+              :disabled="analysis.busy"
+              @click="fillQuestion(example)"
+            >
+              {{ example }}<ArrowUpRight :size="16" aria-hidden="true" />
+            </button>
+          </div>
+          <small>未指定时间的新问题默认查询最近 30 天。</small>
+        </section>
+        <article
+          v-for="(item, index) in analysis.runs"
+          :key="item.id"
+          class="turn"
+          :class="{ 'viewing-turn': run?.id === item.id }"
+          :aria-label="`第 ${index + 1} 轮分析`"
+        >
+          <div class="user-message">{{ item.question }}</div>
+          <div class="assistant-message">
+            <div class="turn-meta">
+              <span>第 {{ index + 1 }} 轮</span
+              ><span class="badge" :class="item.status">{{ statusLabels[item.status] }}</span>
+            </div>
+            <p v-if="item.status === 'clarification_required'" class="clarification">
+              {{ item.draft?.clarification
+              }}<span v-if="continuation?.id === item.id" class="muted"
+                >直接在输入框回答即可继续。</span
+              >
+            </p>
+            <p v-else-if="item.status === 'cancelled'" class="muted">
+              分析已停止，可以提交新问题。
+            </p>
+            <p v-else-if="item.error_message" class="error" role="alert">
+              {{ item.error_message }}
+            </p>
+            <section
+              v-if="item.summary || item.summary_error"
+              class="result-summary"
+              aria-label="结果总结"
+            >
+              <p
+                v-if="item.summary"
+                class="summary-text"
+                :class="{
+                  'compact-summary':
+                    item.summary.text.length > 140 && !expandedSummaries.has(item.id),
+                }"
+              >
+                {{ item.summary.text }}
+              </p>
+              <button
+                v-if="item.summary && item.summary.text.length > 140"
+                type="button"
+                class="summary-toggle"
+                :aria-expanded="expandedSummaries.has(item.id)"
+                @click="toggleSummary(item.id)"
+              >
+                {{ expandedSummaries.has(item.id) ? '收起总结' : '查看完整总结' }}
+              </button>
+              <p v-if="!item.summary" class="muted">{{ item.summary_error }}</p>
+            </section>
+            <p v-else-if="item.result" class="muted">
+              已返回 {{ item.result.row_count }} 行结果{{
+                item.status === 'running' ? '，正在准备图表与总结…' : '。'
+              }}
+            </p>
+            <p v-else-if="item.status === 'running'" class="progress" role="status">
+              {{
+                analysis.activeRunId === item.id
+                  ? analysis.progress
+                  : '该分析尚未完成，可刷新会话查看状态或停止后重新提交。'
+              }}
+            </p>
+            <AnalysisConditions :draft="item.draft" />
+            <div class="turn-actions">
+              <button
+                type="button"
+                class="view-result"
+                :aria-pressed="run?.id === item.id"
+                @click="viewResult(item)"
+              >
+                <BarChart3 :size="15" aria-hidden="true" />{{
+                  run?.id === item.id && isDesktop ? '正在查看' : '查看结果'
+                }}</button
+              ><button
+                v-if="canContinue(item) && continuation?.id !== item.id"
+                type="button"
+                :disabled="analysis.busy"
+                @click="continueFrom(item)"
+              >
+                {{ item.status === 'clarification_required' ? '回答此澄清' : '从此结果追问'
+                }}<ArrowUpRight :size="14" aria-hidden="true" /></button
+              ><button
+                v-if="item.status === 'running' && !analysis.sending"
+                type="button"
+                :disabled="analysis.busy"
+                @click="analysis.stop(item.id)"
+              >
+                停止此运行
+              </button>
+            </div>
+          </div>
+        </article>
+        <div v-if="analysis.pendingQuestion" class="turn pending">
+          <div class="user-message">{{ analysis.pendingQuestion }}</div>
+          <p class="progress" role="status">正在准备分析…</p>
+        </div>
+        <p v-if="analysis.loading" class="muted" role="status">正在读取历史记录…</p>
       </div>
-      <p v-if="!analysis.conversations.length" class="muted">提交问题后，分析会保存在这里。</p>
       <button
-        v-for="conversation in analysis.conversations"
-        :key="conversation.id"
+        v-if="!followingLatest && analysis.runs.length"
         type="button"
-        class="history-item"
-        :class="{ selected: analysis.conversationId === conversation.id }"
-        :disabled="analysis.busy"
-        :aria-pressed="analysis.conversationId === conversation.id"
-        @click="analysis.selectConversation(conversation.id)"
+        class="latest-button"
+        @click="scrollLatest"
       >
-        {{ conversation.title }}
+        <ArrowDown :size="14" aria-hidden="true" />回到最新
       </button>
-      <BaseButton
-        v-if="analysis.hasMore"
-        variant="secondary"
-        :disabled="analysis.busy"
-        @click="analysis.loadHistory(true)"
-        >加载更多</BaseButton
-      >
-    </aside>
-
-    <main class="analysis-main">
-      <section class="panel composer">
-        <div class="eyebrow">电商业务数据</div>
-        <h1>用问题开始分析</h1>
-        <p class="muted">
-          查询销售、订单和退款。可继续追问并修改条件；新问题未指定时间时默认最近 30 天。
-        </p>
-        <p v-if="continuation" class="continuation" role="status">
-          {{ continuation.status === 'clarification_required' ? '待补充条件：' : '可继续追问：' }}
-          {{ continuation.draft?.resolved_question || continuation.question }}
-          <span class="muted">追问接续本会话最近的分析；开始新话题可点击“新建分析”。</span>
-        </p>
+      <section class="composer">
+        <div v-if="continuation" class="continuation" aria-label="追问来源" role="status">
+          <span
+            >{{ continuation.status === 'clarification_required' ? '待补充条件' : '追问基于' }} · 第
+            {{ continuationTurn }} 轮</span
+          ><strong :title="continuation.draft?.resolved_question || continuation.question">{{
+            continuation.draft?.resolved_question || continuation.question
+          }}</strong
+          ><AnalysisConditions :draft="continuation.draft" />
+        </div>
+        <div v-if="suggestions.length" class="suggestions">
+          <button
+            v-for="suggestion in suggestions"
+            :key="suggestion"
+            type="button"
+            @click="fillQuestion(suggestion)"
+          >
+            {{ suggestion }}
+          </button>
+        </div>
+        <p v-if="analysis.error" class="error" role="alert">{{ analysis.error }}</p>
         <form @submit.prevent="submit">
-          <label for="analysis-question" class="question-label">分析问题</label>
-          <textarea
+          <label for="analysis-question" class="sr-only">分析问题</label
+          ><textarea
             id="analysis-question"
+            ref="questionInput"
             v-model="question"
             maxlength="2000"
-            rows="3"
-            :disabled="analysis.busy"
+            rows="2"
+            :disabled="analysis.loading || !!analysis.deletingId"
             :placeholder="
               continuation?.status === 'clarification_required'
-                ? '直接回答澄清问题，例如：按支付时间，不扣退款'
+                ? '直接回答澄清问题，例如：用客户区域'
                 : continuation
-                  ? '例如：按品类拆分，或改成最近 7 天'
+                  ? '继续追问，或修改当前分析条件…'
                   : '例如：最近 30 天的实付销售额和支付订单数'
             "
-            required
+            @keydown="keydown"
           />
           <div class="submit-row">
-            <span class="muted">{{ question.length }} / 2000</span>
-            <BaseButton
-              v-if="analysis.sending"
+            <span class="muted"
+              >Enter 发送 · Shift+Enter 换行<span v-if="question.length > 1800">
+                · {{ question.length }}/2000</span
+              ></span
+            ><BaseButton
+              v-if="analysis.sending || analysis.stopping"
               variant="secondary"
               :disabled="analysis.stopping"
               @click="analysis.stop()"
               >{{ analysis.stopping ? '正在停止…' : '停止分析' }}</BaseButton
-            >
-            <BaseButton v-else type="submit" :disabled="analysis.busy || !question.trim()">{{
-              continuation?.status === 'clarification_required' ? '补充并继续' : '开始分析'
-            }}</BaseButton>
+            ><BaseButton v-else type="submit" :disabled="analysis.busy || !question.trim()"
+              >{{ continuation?.status === 'clarification_required' ? '补充并继续' : '发送'
+              }}<ArrowUp :size="16" aria-hidden="true"
+            /></BaseButton>
           </div>
         </form>
-        <div class="examples">
-          <button
-            v-for="example in examples"
-            :key="example"
-            type="button"
-            :disabled="analysis.busy"
-            @click="question = example"
-          >
-            {{ example }}
-          </button>
-        </div>
-        <p v-if="analysis.sending" class="progress" role="status">
-          {{ analysis.progress }}
-        </p>
-        <p v-if="analysis.loading" class="muted" role="status">正在读取历史记录…</p>
-        <p v-if="analysis.error" class="error" role="alert">{{ analysis.error }}</p>
-      </section>
-
-      <nav v-if="analysis.runs.length > 1" class="run-history" aria-label="本会话最近 50 次分析">
-        <button
-          v-for="item in analysis.runs"
-          :key="item.id"
-          type="button"
-          :aria-pressed="run?.id === item.id"
-          :class="{ selected: run?.id === item.id }"
-          :disabled="analysis.busy"
-          @click="analysis.selectedRun = item"
-        >
-          {{ item.question }}
-        </button>
-      </nav>
-
-      <section v-if="run" class="panel output" :aria-label="statusLabel[run.status]">
-        <div class="output-heading">
-          <h2>{{ run.question }}</h2>
-          <span class="badge" :class="run.status">{{ statusLabel[run.status] }}</span>
-        </div>
-        <p v-if="run.status === 'running' && !analysis.sending" class="muted">
-          该记录尚未完成。刷新会话查看状态，或停止此运行后重新提交问题。
-          <BaseButton variant="secondary" :disabled="analysis.busy" @click="analysis.stop()">
-            停止此运行
-          </BaseButton>
-        </p>
-        <p v-if="run.status === 'cancelled'" class="muted" role="status">
-          分析已停止，可以提交新问题。
-        </p>
-        <p v-else-if="run.error_message" class="error" role="alert">{{ run.error_message }}</p>
-        <p v-if="run.status === 'clarification_required'" class="clarification">
-          {{ run.draft?.clarification }}
-          <span v-if="continuation?.id === run.id">直接在输入框回答即可继续。</span>
-          <BaseButton
-            v-if="continuation?.id === run.id"
-            variant="secondary"
-            :disabled="analysis.busy"
-            @click="answerClarification"
-            >补充条件</BaseButton
-          >
-        </p>
-        <div v-if="run.draft" class="effective-context" aria-label="本轮分析口径">
-          <h3>本轮分析口径</h3>
-          <div v-if="sourceTurn" class="context">
-            <strong>{{
-              run.draft.context_mode === 'clarification' ? '接续澄清' : '追问来源'
-            }}</strong>
-            <span>{{ sourceTurn.draft.resolved_question || sourceTurn.question }}</span>
-          </div>
-          <div v-if="run.draft.resolved_question" class="context">
-            <strong>完整问题</strong><span>{{ run.draft.resolved_question }}</span>
-          </div>
-          <div v-if="run.draft.metrics?.length" class="context">
-            <strong>指标</strong>
-            <span>{{ run.draft.metrics.map((id) => metricLabel[id] || id).join('、') }}</span>
-          </div>
-          <div v-if="run.draft.time_range" class="context">
-            <strong>时间范围</strong><span>{{ run.draft.time_range }}</span>
-          </div>
-          <div v-if="run.draft.filters" class="context">
-            <strong>筛选条件</strong><span>{{ run.draft.filters.join('；') || '无额外筛选' }}</span>
-          </div>
-          <div v-if="run.draft.group_by" class="context">
-            <strong>分组</strong><span>{{ run.draft.group_by.join('、') || '不分组' }}</span>
-          </div>
-        </div>
-        <ul v-if="run.draft?.assumptions?.length" class="assumptions">
-          <li v-for="(assumption, index) in run.draft.assumptions" :key="index">
-            {{ assumption }}
-          </li>
-        </ul>
-        <section
-          v-if="run.summary || run.summary_error"
-          class="result-summary"
-          aria-label="结果总结"
-        >
-          <h3>结果总结</h3>
-          <p v-if="run.summary" class="summary-text">{{ run.summary.text }}</p>
-          <p v-else class="muted" role="status">{{ run.summary_error }}</p>
-          <ul v-if="run.summary?.limitations?.length" class="summary-limitations">
-            <li v-for="(limitation, index) in run.summary.limitations" :key="index">
-              {{ limitation }}
-            </li>
-          </ul>
-        </section>
-        <QueryResultChart
-          v-if="run.result && run.chart"
-          :key="run.id"
-          :result="run.result"
-          :spec="run.chart"
-          :message="run.chart_message"
-        />
-        <p v-else-if="run.result && run.chart_message" class="muted">{{ run.chart_message }}</p>
-        <QueryResultTable v-if="run.result" :result="run.result" />
-        <details v-if="run.draft?.sql" class="sql" open>
-          <summary>SQL</summary>
-          <pre><code>{{ run.draft.sql }}</code></pre>
-        </details>
-        <details class="trace" :open="analysis.sending">
-          <summary>执行记录 · {{ run.steps?.length ?? 0 }} 步</summary>
-          <ol>
-            <li v-for="(step, index) in run.steps" :key="index">
-              <span>{{ nodeLabel[step.node] ?? step.node }}</span
-              ><span
-                >{{
-                  { running: '进行中', succeeded: '完成', failed: '失败', cancelled: '已停止' }[
-                    step.status
-                  ]
-                }}
-                · 第 {{ Math.max(1, step.attempt) }} 次 · {{ step.elapsed_ms }} ms</span
-              >
-              <p v-if="step.detail">{{ step.detail }}</p>
-            </li>
-          </ol>
-          <p class="muted">
-            模型：{{ run.model }} · 提示词：{{ run.prompt_version }} · 结构：{{
-              run.schema_version?.slice(0, 12)
-            }}
-          </p>
-          <p v-if="run.summary_prompt_version" class="muted">
-            总结提示词：{{ run.summary_prompt_version }}
-          </p>
-          <p v-if="Object.keys(run.token_usage ?? {}).length" class="muted">
-            Token 用量：{{
-              Object.entries(run.token_usage ?? {})
-                .map(([name, value]) => `${name}: ${value}`)
-                .join(' · ')
-            }}
-          </p>
-        </details>
       </section>
     </main>
+    <aside v-if="isDesktop" class="result-area">
+      <AnalysisResultPanel
+        v-if="run"
+        :run="run"
+        :turn="selectedTurn"
+        :context-run-id="continuation?.id"
+        :busy="analysis.busy"
+        @continue="continueFrom"
+      />
+      <div v-else class="result-empty">
+        <BarChart3 :size="28" aria-hidden="true" />
+        <h2>分析结果将在这里展示</h2>
+        <p>查看图表、表格和分析口径，随时从某一轮结果继续追问。</p>
+      </div>
+    </aside>
+    <DialogRoot v-model:open="resultOpen"
+      ><DialogPortal
+        ><DialogOverlay class="workspace-overlay" /><DialogContent
+          class="result-drawer"
+          @close-auto-focus.prevent="questionInput?.focus()"
+          ><div class="drawer-heading">
+            <DialogTitle>分析结果</DialogTitle
+            ><DialogClose class="icon-button" aria-label="关闭分析结果"
+              ><X :size="18" aria-hidden="true"
+            /></DialogClose>
+          </div>
+          <DialogDescription class="sr-only"
+            >查看选中分析的图表、表格、SQL 和执行记录。</DialogDescription
+          ><AnalysisResultPanel
+            v-if="run"
+            :run="run"
+            :turn="selectedTurn"
+            :context-run-id="continuation?.id"
+            :busy="analysis.busy"
+            @continue="continueFrom" /></DialogContent></DialogPortal
+    ></DialogRoot>
+    <DialogRoot v-model:open="historyOpen"
+      ><DialogPortal
+        ><DialogOverlay class="workspace-overlay" /><DialogContent
+          class="history-drawer"
+          @close-auto-focus.prevent="questionInput?.focus()"
+          ><div class="drawer-heading">
+            <DialogTitle>历史会话</DialogTitle
+            ><DialogClose class="icon-button" aria-label="关闭历史会话"
+              ><X :size="18" aria-hidden="true"
+            /></DialogClose>
+          </div>
+          <DialogDescription class="sr-only">新建、选择或删除分析会话。</DialogDescription
+          ><AnalysisSidebar
+            @new="newAnalysis"
+            @select="selectConversation"
+            @remove="requestDelete" /></DialogContent></DialogPortal
+    ></DialogRoot>
+    <AlertDialogRoot v-model:open="deleteOpen"
+      ><AlertDialogPortal
+        ><AlertDialogOverlay class="workspace-overlay delete-overlay" /><AlertDialogContent
+          class="delete-dialog"
+          @escape-key-down="analysis.deletingId && $event.preventDefault()"
+          @close-auto-focus="restoreDeleteFocus"
+          ><AlertDialogTitle class="delete-title">删除会话？</AlertDialogTitle
+          ><AlertDialogDescription class="delete-description"
+            >「{{
+              deleteTarget?.title
+            }}」中的问题、查询结果和运行记录会一并删除，无法恢复。</AlertDialogDescription
+          >
+          <p v-if="analysis.error" class="error" role="alert">{{ analysis.error }}</p>
+          <div class="delete-actions">
+            <AlertDialogCancel as-child
+              ><BaseButton variant="secondary" :disabled="!!analysis.deletingId"
+                >取消</BaseButton
+              ></AlertDialogCancel
+            ><BaseButton
+              class="danger-button"
+              :disabled="!!analysis.deletingId"
+              @click="confirmDelete"
+              >{{ analysis.deletingId ? '正在删除…' : '确认删除' }}</BaseButton
+            >
+          </div></AlertDialogContent
+        ></AlertDialogPortal
+      ></AlertDialogRoot
+    >
   </div>
 </template>
 
 <style scoped>
-.result-summary {
-  margin-bottom: 24px;
-  padding: 20px;
-  background: var(--color-background);
-  border-radius: var(--radius-sm);
-}
-.result-summary h3 {
-  margin: 0 0 12px;
-  font-size: 15px;
-}
-.summary-text {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  line-height: 1.8;
-}
-.summary-limitations {
-  padding-left: 20px;
-  color: var(--color-muted);
-  font-size: 12px;
-  line-height: 1.7;
-}
 .analysis-layout {
   display: grid;
-  grid-template-columns: 240px minmax(0, 1fr);
-  min-height: calc(100vh - 90px);
+  grid-template-columns: 220px minmax(0, 1fr);
+  height: calc(100dvh - var(--workspace-header-height, 85px));
+  min-height: 480px;
 }
-.history {
-  padding: 24px 16px;
+.analysis-layout.with-result {
+  grid-template-columns: 220px minmax(320px, 0.9fr) minmax(440px, 1.1fr);
+}
+.sidebar {
   border-right: 1px solid var(--color-border);
-  background: var(--color-surface);
 }
-.history > .base-button {
-  width: 100%;
+.conversation {
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  min-width: 0;
+  min-height: 0;
 }
-.history-heading {
+.conversation-heading {
   display: flex;
   align-items: center;
+  gap: 12px;
   justify-content: space-between;
-  margin: 24px 0 12px;
-}
-.history-heading h2 {
-  font-size: 13px;
-  color: var(--color-muted);
-  margin: 0;
-}
-.history-heading button {
-  border: 0;
-  background: transparent;
-  color: var(--color-primary);
-  cursor: pointer;
-  font-size: 13px;
-}
-.history-item {
-  display: block;
-  width: 100%;
-  padding: 12px;
-  border: 0;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  text-align: left;
-  color: var(--color-text);
-  cursor: pointer;
-  font-size: 13px;
-  overflow-wrap: anywhere;
-}
-.selected {
-  background: var(--color-primary-soft);
-  color: var(--color-primary);
-}
-.analysis-main {
-  padding: 32px;
-  max-width: 1400px;
-  width: 100%;
-  margin: 0 auto;
-}
-.panel {
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--color-border);
   background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
-  padding: 28px;
 }
-.eyebrow {
-  color: var(--color-primary);
-  font-size: 12px;
-  font-weight: 600;
+.conversation-heading > div {
+  min-width: 0;
 }
 h1 {
-  font-size: 24px;
+  font-size: 16px;
+  margin: 0 0 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.conversation-heading span {
+  color: var(--color-muted);
+  font-size: 12px;
+}
+.result-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  border-radius: 7px;
+  padding: 8px;
+  font-size: 12px;
+  color: var(--color-primary);
+}
+.messages {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+  padding: 24px;
+  overscroll-behavior: contain;
+}
+.welcome {
+  max-width: 560px;
+  margin: 36px auto;
+}
+.welcome-icon {
+  display: inline-grid;
+  place-items: center;
+  padding: 12px;
+  background: var(--color-primary-soft);
+  color: var(--color-primary);
+  border-radius: 12px;
+}
+.welcome h2 {
+  font-size: 23px;
+  margin: 20px 0 12px;
+}
+.welcome p {
+  color: var(--color-muted);
+  font-size: 14px;
+  line-height: 1.8;
+}
+.welcome small {
+  color: var(--color-muted);
+  font-size: 12px;
+}
+.examples {
+  display: grid;
+  gap: 10px;
+  margin: 24px 0 16px;
+}
+.examples button {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid var(--color-border);
+  padding: 14px;
+  border-radius: 8px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: 13px;
+  text-align: left;
+  line-height: 1.6;
+}
+.examples svg {
+  flex-shrink: 0;
+  color: var(--color-muted);
+}
+.turn {
+  margin-bottom: 30px;
+  overflow-wrap: anywhere;
+}
+.user-message {
+  margin-left: auto;
+  max-width: 90%;
+  width: fit-content;
+  padding: 12px 16px;
+  background: #eaf0f9;
+  border-radius: 12px 12px 3px 12px;
+  font-size: 14px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
+.assistant-message {
+  margin-top: 18px;
+  padding-left: 14px;
+  border-left: 2px solid var(--color-border);
+}
+.viewing-turn .assistant-message {
+  border-left-color: var(--color-primary);
+}
+.turn-meta {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  font-size: 12px;
+  color: var(--color-muted);
+}
+.badge {
+  border-radius: 20px;
+  padding: 3px 8px;
+  font-size: 11px;
+  background: var(--color-surface);
+}
+.badge.succeeded {
+  color: #047857;
+}
+.badge.failed {
+  color: #b91c1c;
+}
+.badge.clarification_required {
+  color: #92400e;
+}
+.summary-text {
+  font-size: 14px;
+  line-height: 1.85;
+  white-space: pre-wrap;
   margin: 12px 0;
 }
-.muted {
-  color: var(--color-muted);
-  font-size: 13px;
-  line-height: 1.7;
+.compact-summary {
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
-.question-label {
+.summary-toggle {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-primary);
+  font-size: 12px;
+  margin: 0 0 12px;
+}
+.turn-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+.turn-actions button,
+.suggestions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  border-radius: 6px;
+  padding: 6px 9px;
+  font-size: 12px;
+  color: var(--color-muted);
+}
+.view-result[aria-pressed='true'] {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+  background: var(--color-primary-soft);
+}
+.composer {
+  padding: 16px 24px 20px;
+  border-top: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+.continuation {
+  margin-bottom: 12px;
+  min-width: 0;
+}
+.continuation > span {
   display: block;
-  margin: 24px 0 8px;
-  font-size: 13px;
-  font-weight: 600;
+  font-size: 11px;
+  color: var(--color-primary);
+  margin-bottom: 5px;
+}
+.continuation strong {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 500;
+  margin-bottom: 8px;
+}
+.suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 10px 0;
+}
+form {
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  padding: 12px;
+  background: var(--color-background);
+  transition: border-color 0.15s ease;
+}
+form:focus-within {
+  border-color: var(--color-primary);
 }
 textarea {
   display: block;
   width: 100%;
-  padding: 14px;
-  resize: vertical;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  background: var(--color-background);
+  border: 0;
+  resize: none;
   color: var(--color-text);
-  line-height: 1.6;
+  background: transparent;
+  line-height: 1.7;
+  font-size: 14px;
+  padding: 0;
+  min-height: 50px;
+  max-height: 150px;
 }
 .submit-row {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   align-items: center;
-  margin-top: 12px;
-}
-.examples {
-  display: flex;
-  flex-wrap: wrap;
   gap: 8px;
-  margin-top: 20px;
+  margin-top: 10px;
 }
-.examples button,
-.run-history button {
-  padding: 8px 12px;
-  border: 1px solid var(--color-border);
-  background: var(--color-background);
-  border-radius: var(--radius-sm);
+.submit-row .muted {
+  font-size: 11px;
+}
+.submit-row .base-button {
   font-size: 12px;
+  min-height: 34px;
+  padding: 6px 12px;
+}
+.muted,
+.progress {
+  font-size: 13px;
+  line-height: 1.8;
   color: var(--color-muted);
-  cursor: pointer;
-}
-.run-history {
-  display: flex;
-  gap: 8px;
-  overflow: auto;
-  margin: 20px 0;
-}
-.run-history button {
-  max-width: 300px;
-  flex-shrink: 0;
-  text-align: left;
-}
-.run-history button.selected {
-  color: var(--color-primary);
-  border-color: var(--color-primary);
 }
 .progress {
   color: var(--color-primary);
-  font-size: 13px;
 }
 .error {
-  background: #fef2f2;
   color: #b91c1c;
-  padding: 14px;
-  border-radius: var(--radius-sm);
-  font-size: 13px;
-  line-height: 1.6;
-}
-.clarification {
-  padding: 14px;
-  background: #fffbeb;
-  color: #92400e;
-  border-radius: var(--radius-sm);
-}
-.output {
-  margin-top: 24px;
-}
-.output-heading {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 20px;
-}
-h2 {
-  font-size: 17px;
-  margin: 0;
-  overflow-wrap: anywhere;
-}
-.badge {
-  padding: 5px 10px;
-  border-radius: 999px;
-  font-size: 12px;
-  background: var(--color-background);
-  color: var(--color-muted);
-  white-space: nowrap;
-}
-.badge.succeeded {
-  background: #ecfdf5;
-  color: #047857;
-}
-.badge.failed {
   background: #fef2f2;
-  color: #b91c1c;
-}
-.context {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  font-size: 13px;
-  margin-bottom: 12px;
-}
-.continuation,
-.effective-context {
-  padding: 14px;
-  border-radius: var(--radius-sm);
-  background: var(--color-background);
+  border-radius: 8px;
+  padding: 12px;
   font-size: 13px;
   line-height: 1.7;
-  overflow-wrap: anywhere;
 }
-.continuation .muted {
+.clarification {
+  color: #92400e;
+  font-size: 14px;
+  line-height: 1.8;
+}
+.clarification .muted {
   display: block;
   margin-top: 6px;
 }
-.effective-context {
-  margin-bottom: 12px;
+.latest-button {
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--color-border);
+  border-radius: 20px;
+  background: var(--color-surface);
+  color: var(--color-primary);
+  padding: 6px 12px;
+  font-size: 12px;
+  margin: 8px;
 }
-.effective-context h3 {
-  margin: 0 0 12px;
-  font-size: 13px;
+.result-area {
+  border-left: 1px solid var(--color-border);
+  min-width: 0;
+  min-height: 0;
+  background: var(--color-surface);
 }
-.context:last-child {
-  margin-bottom: 0;
-}
-.clarification .base-button {
-  margin-left: 12px;
-}
-.assumptions {
+.result-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: 36px;
+  text-align: center;
   color: var(--color-muted);
+}
+.result-empty svg {
+  color: var(--color-primary);
+}
+.result-empty h2 {
+  font-size: 17px;
+  color: var(--color-text);
+  margin: 20px 0 8px;
+}
+.result-empty p {
+  max-width: 280px;
   font-size: 13px;
   line-height: 1.8;
-  padding-left: 20px;
 }
-details {
-  margin-top: 24px;
-  border-top: 1px solid var(--color-border);
-  padding-top: 16px;
-}
-summary {
-  cursor: pointer;
-  font-weight: 600;
-  font-size: 13px;
-}
-pre {
-  overflow: auto;
-  max-height: 400px;
-  padding: 16px;
-  background: var(--color-background);
-  border-radius: var(--radius-sm);
-  line-height: 1.7;
-  font-size: 12px;
-}
-.trace ol {
-  padding-left: 20px;
-}
-.trace li {
-  font-size: 12px;
-  padding: 8px 0;
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  border-radius: 6px;
+  padding: 8px;
   color: var(--color-muted);
 }
-.trace li > span + span {
-  margin-left: 12px;
+.workspace-overlay {
+  position: fixed;
+  inset: 0;
+  background: #0f172a66;
+  z-index: 30;
+}
+.result-drawer,
+.history-drawer {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-surface);
+  z-index: 31;
+}
+.result-drawer {
+  right: 0;
+  width: min(720px, 100%);
+}
+.history-drawer {
+  left: 0;
+  width: min(320px, 100%);
+}
+.drawer-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--color-border);
+}
+.drawer-heading h2 {
+  margin: 0;
+  font-size: 15px;
+}
+.result-drawer .result-panel,
+.history-drawer .history {
+  flex: 1;
+  min-height: 0;
+  height: auto;
+}
+.delete-overlay {
+  z-index: 40;
+}
+.delete-dialog {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(440px, calc(100% - 32px));
+  padding: 24px;
+  border-radius: 12px;
+  background: var(--color-surface);
+  z-index: 41;
+  box-shadow: 0 12px 48px #0f172a33;
+}
+.delete-title {
+  margin: 0 0 12px;
+  font-size: 19px;
+}
+.delete-description {
+  color: var(--color-muted);
+  font-size: 14px;
+  line-height: 1.8;
+  overflow-wrap: anywhere;
+}
+.delete-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 24px;
+}
+.danger-button {
+  background: #b91c1c;
+  color: white;
+}
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+button {
+  cursor: pointer;
 }
 button:disabled {
   cursor: not-allowed;
-  opacity: 0.6;
+  opacity: 0.55;
 }
-button:focus-visible,
-textarea:focus-visible,
-summary:focus-visible {
+button:focus-visible {
   outline: 3px solid var(--color-focus);
-  outline-offset: 2px;
+  outline-offset: 3px;
+}
+/* 输入框的焦点反馈由外层 form 的 focus-within 边框呈现，避免叠加出双层边框 */
+textarea:focus,
+textarea:focus-visible {
+  outline: none;
 }
 @media (max-width: 900px) {
   .analysis-layout {
-    grid-template-columns: 180px minmax(0, 1fr);
-  }
-  .analysis-main {
-    padding: 20px;
-  }
-  .panel {
-    padding: 20px;
+    grid-template-columns: 190px minmax(0, 1fr);
   }
 }
 @media (max-width: 640px) {
   .analysis-layout {
     grid-template-columns: minmax(0, 1fr);
+    min-height: 0;
   }
-  .history {
-    border-right: 0;
-    border-bottom: 1px solid var(--color-border);
-    max-height: 220px;
-    overflow: auto;
+  .conversation-heading {
+    padding: 12px 16px;
   }
-  .history-heading {
-    margin-top: 16px;
+  .messages {
+    padding: 20px 16px;
   }
-  .analysis-main {
-    padding: 16px;
+  .composer {
+    padding: 12px 16px 16px;
   }
-  .panel {
-    padding: 16px;
+  .welcome {
+    margin: 20px auto;
   }
-  h1 {
+  .welcome h2 {
     font-size: 21px;
+  }
+  textarea {
+    font-size: 16px;
+  }
+  .submit-row .muted {
+    font-size: 10px;
+  }
+}
+@media (pointer: coarse) {
+  .icon-button,
+  .turn-actions button,
+  .suggestions button,
+  .result-toggle {
+    min-height: 44px;
   }
 }
 </style>

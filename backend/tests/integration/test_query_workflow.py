@@ -11,7 +11,10 @@ import psycopg
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
-from sqlalchemy import text
+from sqlalchemy import func, select, text
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.orm import Session
+from sqlalchemy.sql.dml import Delete
 
 from app.business.generator import GenerationOptions, generate_dataset
 from app.business.storage import store_dataset
@@ -19,12 +22,107 @@ from app.core.async_work import run_blocking
 from app.core.config import Settings
 from app.datasources.execution import QueryExecutionError, execute_query
 from app.db.connections import connection_string, engine_for, parse_url
+from app.db.models import AnalysisRunRecord, Conversation, Message
 from app.main import create_app
 from app.repositories.analysis import create_conversation, create_run, save_run
 from app.schemas.analysis import ConversationCreate, QueryDraft
 from app.services.analysis import new_run
 from app.services.datasource import get_schema
 from app.services.streaming import RunManager
+
+
+@pytest.mark.parametrize("endpoint", ["messages", "messages/stream"])
+def test_explicit_branch_and_delete_persist_without_affecting_other_conversations(
+    query_settings: Settings, tmp_path: Path, endpoint: str
+) -> None:
+    config = query_settings.model_copy(update={"frontend_dist": tmp_path})
+    conversation = create_conversation(config, ConversationCreate())
+    other = create_conversation(config, ConversationCreate(title="保留会话"))
+
+    def saved_turn(owner, question, status="succeeded", source=None):
+        run = new_run(config, owner.id, question, source)
+        create_run(config, run)
+        run.status = status
+        run.completed_at = run.created_at
+        run.draft = QueryDraft(
+            action="clarify" if status == "clarification_required" else "query",
+            sql="" if status == "clarification_required" else "SELECT 1",
+            clarification="按哪个区域？" if status == "clarification_required" else "",
+            time_range=question,
+        )
+        save_run(config, run)
+        return run
+
+    first = saved_turn(conversation, "最近30天")
+    saved_turn(conversation, "最近7天")
+    clarification = saved_turn(conversation, "待澄清", "clarification_required", first.id)
+    failed = saved_turn(conversation, "失败", "failed")
+    other_run = saved_turn(other, "保留记录")
+
+    async def model(settings, question, schema, reference_time, **kwargs):
+        context = kwargs["conversation_context"]
+        assert context.previous.run_id == first.id
+        assert context.previous.draft.time_range == "最近30天"
+        assert context.clarification is None
+        return QueryDraft(
+            action="query", context_mode="follow_up", sql="SELECT COUNT(*) FROM orders"
+        ), {}
+
+    with (
+        patch("app.agent.graph.generate_draft", side_effect=model),
+        patch("app.agent.graph.generate_summary", side_effect=RuntimeError("stub")),
+        TestClient(create_app(config)) as client,
+    ):
+        response = client.post(
+            f"/api/v1/conversations/{conversation.id}/{endpoint}",
+            json={"question": "按品类", "context_run_id": str(first.id)},
+        )
+        assert response.status_code == 200, response.text
+        if endpoint.endswith("stream"):
+            branch = [
+                json.loads(line[6:])
+                for line in response.text.splitlines()
+                if line.startswith("data: ")
+            ][-1]["run"]
+        else:
+            branch = response.json()
+        assert branch["status"] == "succeeded" and branch["context_run_id"] == str(first.id)
+        assert branch["input_context"]["previous"]["run_id"] == str(first.id)
+        for source, expected in [(other_run.id, 404), (failed.id, 409)]:
+            rejected = client.post(
+                f"/api/v1/conversations/{conversation.id}/{endpoint}",
+                json={"question": "追问", "context_run_id": str(source)},
+            )
+            assert rejected.status_code == expected
+
+    # An old clarification must retain its own branch rather than the latest successful turn.
+    answer = new_run(config, conversation.id, "华东", clarification.id)
+    create_run(config, answer)
+    assert answer.input_context.previous.run_id == first.id
+    assert answer.input_context.clarification.run_id == clarification.id
+
+    with TestClient(create_app(config)) as client:
+        assert client.get(f"/api/v1/runs/{branch['id']}").json() == branch
+        assert client.delete(f"/api/v1/conversations/{conversation.id}").status_code == 204
+        assert client.get(f"/api/v1/conversations/{conversation.id}").status_code == 404
+        assert client.get(f"/api/v1/runs/{first.id}").status_code == 404
+        assert client.delete(f"/api/v1/conversations/{conversation.id}").status_code == 404
+        assert client.get(f"/api/v1/runs/{other_run.id}").status_code == 200
+    engine = engine_for(config.app_database_url, "APP_DATABASE_URL")
+    try:
+        with Session(engine) as session:
+            for table in (AnalysisRunRecord, Message):
+                assert (
+                    session.scalar(
+                        select(func.count())
+                        .select_from(table)
+                        .where(table.conversation_id == conversation.id)
+                    )
+                    == 0
+                )
+            assert session.get(Conversation, other.id) is not None
+    finally:
+        engine.dispose()
 
 
 @pytest.fixture(scope="module")
@@ -37,6 +135,45 @@ def query_settings(query_database_settings: Settings) -> Settings:
         ),
     )
     return query_database_settings.model_copy(update={"qwen_api_key": SecretStr("model-stub")})
+
+
+def test_delete_rolls_back_all_records_on_database_failure(
+    query_settings: Settings, tmp_path: Path
+) -> None:
+    config = query_settings.model_copy(update={"frontend_dist": tmp_path})
+    conversation = create_conversation(config, ConversationCreate())
+    run = new_run(config, conversation.id, "保留完整记录")
+    create_run(config, run)
+    run.status = "succeeded"
+    run.completed_at = run.created_at
+    run.draft = QueryDraft(action="query", sql="SELECT 1")
+    save_run(config, run)
+    original_execute = Session.execute
+
+    def fail_message_delete(session, statement, *args, **kwargs):
+        if isinstance(statement, Delete) and statement.table.name == "messages":
+            raise OperationalError("private SQL", {}, Exception("password=private"))
+        return original_execute(session, statement, *args, **kwargs)
+
+    with TestClient(create_app(config)) as client:
+        with patch("app.repositories.analysis.Session.execute", new=fail_message_delete):
+            response = client.delete(f"/api/v1/conversations/{conversation.id}")
+            assert response.status_code == 503 and "private" not in response.text
+        assert client.get(f"/api/v1/conversations/{conversation.id}").status_code == 200
+        assert client.get(f"/api/v1/runs/{run.id}").json()["draft"]["sql"] == "SELECT 1"
+    engine = engine_for(config.app_database_url, "APP_DATABASE_URL")
+    try:
+        with Session(engine) as session:
+            assert (
+                session.scalar(
+                    select(func.count())
+                    .select_from(Message)
+                    .where(Message.conversation_id == conversation.id)
+                )
+                == 2
+            )
+    finally:
+        engine.dispose()
 
 
 def test_bounded_reads_empty_results_and_errors(query_settings: Settings) -> None:

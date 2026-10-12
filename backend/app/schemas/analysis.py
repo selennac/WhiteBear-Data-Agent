@@ -20,6 +20,7 @@ class MessageCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     question: str = Field(min_length=1, max_length=2000)
+    context_run_id: UUID | None = None
 
     @field_validator("question")
     @classmethod
@@ -128,6 +129,7 @@ class AnalysisRun(BaseModel):
     schema_version: str = ""
     prompt_version: str = "query-v1"
     model: str = ""
+    context_run_id: UUID | None = None
     input_context: ConversationContext = Field(default_factory=ConversationContext)
     draft: QueryDraft | None = None
     result: QueryResult | None = None

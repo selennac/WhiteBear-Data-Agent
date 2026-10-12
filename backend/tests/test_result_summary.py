@@ -47,7 +47,7 @@ def test_summary_sends_bounded_samples_exact_statistics_and_no_credentials() -> 
     assert "secret_sql" not in json.dumps(context) and "schema" not in context
     assert any("截断" in note for note in summary.limitations)
     assert usage == {"input_tokens": 42}
-    assert model.call_args.kwargs["timeout"] == 30
+    assert model.call_args.kwargs["timeout"] == settings.llm_summary_timeout_seconds
 
 
 def test_long_sample_cells_are_clipped_and_empty_result_needs_no_model() -> None:
@@ -99,7 +99,7 @@ def test_summary_failure_keeps_query_and_chart_without_sql_retry() -> None:
         patch("app.agent.graph.execute_query", return_value=grouped([["A", "10.01"]])),
         patch(
             "app.agent.graph.generate_summary",
-            side_effect=ModelError("summary_timeout", "总结超过30秒，查询结果已保留。"),
+            side_effect=ModelError("summary_timeout", "总结超过 90 秒，查询结果已保留。"),
         ) as summary,
     ):
         asyncio.run(run_graph(Settings(_env_file=None), run))

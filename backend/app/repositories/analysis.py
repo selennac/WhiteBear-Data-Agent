@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
@@ -18,6 +18,10 @@ from app.schemas.analysis import (
 
 
 class RecordNotFoundError(ValueError):
+    pass
+
+
+class InvalidContextError(ValueError):
     pass
 
 
@@ -83,10 +87,10 @@ def create_run(settings: Settings, run: AnalysisRun) -> None:
     engine = engine_for(settings.app_database_url, "APP_DATABASE_URL")
     try:
         with Session(engine) as session, session.begin():
-            conversation = session.get(Conversation, run.conversation_id)
+            conversation = session.get(Conversation, run.conversation_id, with_for_update=True)
             if conversation is None:
                 raise RecordNotFoundError("会话不存在。")
-            run.input_context = load_context(session, run.conversation_id)
+            run.input_context = load_context(session, run.conversation_id, run.context_run_id)
             message_id = uuid4()
             session.add(
                 Message(
@@ -113,8 +117,31 @@ def create_run(settings: Settings, run: AnalysisRun) -> None:
         engine.dispose()
 
 
-def load_context(session: Session, conversation_id: UUID) -> ConversationContext:
+def context_turn(run: AnalysisRun) -> ContextTurn:
+    assert run.draft is not None
+    return ContextTurn(
+        run_id=run.id,
+        question=run.question,
+        reference_time=run.reference_time,
+        draft=run.draft,
+    )
+
+
+def load_context(
+    session: Session, conversation_id: UUID, context_run_id: UUID | None = None
+) -> ConversationContext:
     """Snapshot two relevant turns, without recursively copying history or result rows."""
+    if context_run_id is not None:
+        record = session.get(AnalysisRunRecord, context_run_id)
+        if record is None or record.conversation_id != conversation_id:
+            raise RecordNotFoundError("追问来源不在当前会话中，请重新选择。")
+        source = AnalysisRun.model_validate(record.payload)
+        if source.status not in ("succeeded", "clarification_required") or source.draft is None:
+            raise InvalidContextError("只能从成功分析或待澄清问题继续追问。")
+        turn = context_turn(source)
+        if source.status == "clarification_required":
+            return ConversationContext(previous=source.input_context.previous, clarification=turn)
+        return ConversationContext(previous=turn)
     context = ConversationContext()
     previous_created_at: datetime | None = None
     for status in ("succeeded", "clarification_required"):
@@ -132,18 +159,31 @@ def load_context(session: Session, conversation_id: UUID) -> ConversationContext
         previous = AnalysisRun.model_validate(record.payload)
         if previous.draft is None:
             continue
-        turn = ContextTurn(
-            run_id=previous.id,
-            question=previous.question,
-            reference_time=previous.reference_time,
-            draft=previous.draft,
-        )
+        turn = context_turn(previous)
         if status == "succeeded":
             context.previous = turn
             previous_created_at = previous.created_at
         elif previous_created_at is None or previous.created_at > previous_created_at:
             context.clarification = turn
     return context
+
+
+def delete_conversation(settings: Settings, conversation_id: UUID) -> None:
+    engine = engine_for(settings.app_database_url, "APP_DATABASE_URL")
+    try:
+        with Session(engine) as session, session.begin():
+            record = session.get(Conversation, conversation_id, with_for_update=True)
+            if record is None:
+                raise RecordNotFoundError("会话不存在或已删除。")
+            session.execute(
+                delete(AnalysisRunRecord).where(
+                    AnalysisRunRecord.conversation_id == conversation_id
+                )
+            )
+            session.execute(delete(Message).where(Message.conversation_id == conversation_id))
+            session.delete(record)
+    finally:
+        engine.dispose()
 
 
 def save_run(settings: Settings, run: AnalysisRun) -> None:
