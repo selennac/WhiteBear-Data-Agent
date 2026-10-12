@@ -225,3 +225,37 @@ describe('streaming analysis state', () => {
     await pending
   })
 })
+
+it('receives chart and summary before the saved terminal event and restores them from history', async () => {
+  setActivePinia(createPinia())
+  const chart = {
+    title: '销售额',
+    type: 'bar' as const,
+    x_column: 0,
+    y_columns: [1],
+    supported_types: ['bar' as const],
+  }
+  const summary = { text: '查询返回12行。', limitations: ['仅已返回数据。'] }
+  let finish!: (value: AnalysisRun) => void
+  vi.mocked(createConversation).mockResolvedValue(conversation)
+  vi.mocked(streamQuestion).mockImplementation((_id, _question, receive) => {
+    receive({ type: 'run_started', run_id: run.id, run: { ...run, status: 'running' } })
+    receive({ type: 'chart', run_id: run.id, chart, chart_message: '结果已截断。' })
+    receive({ type: 'summary', run_id: run.id, summary, summary_prompt_version: 'summary-v1' })
+    return new Promise((resolve) => {
+      finish = resolve
+    })
+  })
+  const state = useAnalysisStore()
+  const pending = state.submit('销售额')
+  await vi.waitFor(() => expect(state.selectedRun?.summary).toEqual(summary))
+  expect(state.selectedRun?.chart).toEqual(chart)
+  expect(state.selectedRun?.status).toBe('running')
+  const saved = { ...run, chart, summary }
+  finish(saved)
+  await pending
+  vi.mocked(getConversation).mockResolvedValue({ ...conversation, runs: [saved] })
+  await state.selectConversation(conversation.id)
+  expect(state.selectedRun?.summary).toEqual(summary)
+  expect(state.selectedRun?.chart).toEqual(chart)
+})

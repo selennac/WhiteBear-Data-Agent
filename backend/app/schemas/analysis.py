@@ -43,6 +43,7 @@ class QueryDraft(BaseModel):
     resolved_question: str = Field(default="", max_length=4000)
     filters: list[str] = Field(default_factory=list, max_length=20)
     group_by: list[str] = Field(default_factory=list, max_length=20)
+    chart_intent: Literal["auto", "line", "bar", "pie", "table"] = "auto"
 
     @model_validator(mode="after")
     def require_action_content(self) -> "QueryDraft":
@@ -78,6 +79,36 @@ class QueryResult(BaseModel):
     elapsed_ms: int
 
 
+class ChartSpec(BaseModel):
+    """Column positions preserve duplicate SQL aliases; no executable chart options."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["line", "bar", "pie"]
+    title: str = Field(max_length=200)
+    x_column: int = Field(ge=0)
+    y_columns: list[int] = Field(min_length=1, max_length=4)
+    series_column: int | None = Field(default=None, ge=0)
+    supported_types: list[Literal["line", "bar", "pie"]] = Field(min_length=1, max_length=3)
+
+
+class SummaryNarrative(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    text: str = Field(min_length=1, max_length=4000)
+
+    @field_validator("text")
+    @classmethod
+    def require_text(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("总结不能为空。")
+        return value.strip()
+
+
+class ResultSummary(SummaryNarrative):
+    limitations: list[str] = Field(default_factory=list, max_length=10)
+
+
 class RunStep(BaseModel):
     node: str
     status: Literal["running", "succeeded", "failed", "cancelled"]
@@ -100,6 +131,11 @@ class AnalysisRun(BaseModel):
     input_context: ConversationContext = Field(default_factory=ConversationContext)
     draft: QueryDraft | None = None
     result: QueryResult | None = None
+    chart: ChartSpec | None = None
+    chart_message: str = ""
+    summary: ResultSummary | None = None
+    summary_error: str = ""
+    summary_prompt_version: str = ""
     steps: list[RunStep] = Field(default_factory=list)
     token_usage: dict[str, int] = Field(default_factory=dict)
     error_code: str = ""
@@ -118,12 +154,26 @@ class ConversationDetail(ConversationSummary):
 
 
 class AnalysisEvent(BaseModel):
-    type: Literal["run_started", "node_status", "sql", "result", "run_completed", "stream_error"]
+    type: Literal[
+        "run_started",
+        "node_status",
+        "sql",
+        "result",
+        "chart",
+        "summary",
+        "run_completed",
+        "stream_error",
+    ]
     run_id: UUID
     run: AnalysisRun | None = None
     step: RunStep | None = None
     draft: QueryDraft | None = None
     result: QueryResult | None = None
+    chart: ChartSpec | None = None
+    chart_message: str = ""
+    summary: ResultSummary | None = None
+    summary_error: str = ""
+    summary_prompt_version: str = ""
     schema_version: str = ""
     token_usage: dict[str, int] = Field(default_factory=dict)
     error_message: str = ""

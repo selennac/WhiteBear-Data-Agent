@@ -34,12 +34,19 @@ async def execute_run(
         await asyncio.sleep(0)
         await run_graph(settings, run, emit)
     except asyncio.CancelledError:
-        run.status = "cancelled"
-        run.error_code = "run_cancelled"
-        run.error_message = "分析已停止。"
-        run.result = None
+        if run.result is not None:
+            run.status = "succeeded"
+            run.summary_error = "总结已停止，查询结果已保留。"
+        else:
+            run.status = "cancelled"
+            run.error_code = "run_cancelled"
+            run.error_message = "分析已停止。"
     except Exception:
-        fail(run, "analysis_failed", "分析未能完成，请检查配置后重试。")
+        if run.result is not None:
+            run.status = "succeeded"
+            run.summary_error = "结果展示未能完成，查询结果已保留。"
+        else:
+            fail(run, "analysis_failed", "分析未能完成，请检查配置后重试。")
     run.completed_at = datetime.now(UTC)
     # A terminal event is only published after the final record has committed.
     await finish_task(asyncio.create_task(run_blocking(save_run, settings, run)))

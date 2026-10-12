@@ -14,9 +14,11 @@ from app.datasources.execution import QueryExecutionError, execute_query
 from app.datasources.validation import SQLValidationError, validate_sql
 from app.db.connections import DatabaseConfigurationError
 from app.llm.query import ModelError, generate_draft
+from app.llm.summary import SUMMARY_PROMPT_VERSION, generate_summary
 from app.schemas.analysis import AnalysisEvent, AnalysisRun, QueryDraft, RunStep
 from app.schemas.datasource import DatasourceSchema
 from app.services.datasource import get_schema
+from app.services.presentation import build_chart
 
 
 class AnalysisState(TypedDict):
@@ -158,13 +160,52 @@ async def run_graph(
         assert schema is not None and draft is not None
         try:
             run.result = await run_blocking(execute_query, settings, draft.sql, schema)
-            run.status = "succeeded"
             emit(AnalysisEvent(type="result", run_id=run.id, result=run.result))
             return {"diagnostic": ""}
         except QueryExecutionError as error:
             if not error.retryable or state["attempt"] >= 3:
                 fail(run, error.code, str(error))
             return {"diagnostic": str(error)}
+
+    @tracked("build_chart")
+    async def present(state: AnalysisState) -> dict[str, object]:
+        assert run.result is not None and run.draft is not None
+        run.chart, run.chart_message = build_chart(run.result, run.draft)
+        emit(
+            AnalysisEvent(
+                type="chart",
+                run_id=run.id,
+                chart=run.chart,
+                chart_message=run.chart_message,
+            )
+        )
+        return {}
+
+    @tracked("summarize_result")
+    async def summarize(state: AnalysisState) -> dict[str, object]:
+        assert run.result is not None and run.draft is not None and state["schema"] is not None
+        run.summary_prompt_version = SUMMARY_PROMPT_VERSION
+        try:
+            run.summary, usage = await generate_summary(
+                settings, run.draft, run.result, state["schema"]
+            )
+            for key, value in usage.items():
+                run.token_usage[key] = run.token_usage.get(key, 0) + value
+        except ModelError as error:
+            run.summary_error = str(error)
+        except Exception:
+            run.summary_error = "总结暂不可用，查询结果已保留。"
+        run.status = "succeeded"
+        emit(
+            AnalysisEvent(
+                type="summary",
+                run_id=run.id,
+                summary=run.summary,
+                summary_error=run.summary_error,
+                summary_prompt_version=run.summary_prompt_version,
+            )
+        )
+        return {"diagnostic": run.summary_error}
 
     def after_generate(state: AnalysisState) -> str:
         if run.status != "running":
@@ -181,13 +222,20 @@ async def run_graph(
     graph.add_node("generate", RunnableLambda(generate))
     graph.add_node("validate", RunnableLambda(validate))
     graph.add_node("execute", RunnableLambda(execute))
+    graph.add_node("present", RunnableLambda(present))
+    graph.add_node("summarize", RunnableLambda(summarize))
     graph.add_edge(START, "load")
     graph.add_conditional_edges("load", lambda state: END if run.status == "failed" else "generate")
     graph.add_conditional_edges("generate", after_generate)
     graph.add_conditional_edges("validate", after_validation)
     graph.add_conditional_edges(
-        "execute", lambda state: END if run.status != "running" else "generate"
+        "execute",
+        lambda state: (
+            END if run.status == "failed" else "present" if run.result is not None else "generate"
+        ),
     )
+    graph.add_edge("present", "summarize")
+    graph.add_edge("summarize", END)
     await graph.compile().ainvoke(
         {
             "run": run,

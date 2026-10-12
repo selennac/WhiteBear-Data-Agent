@@ -1,6 +1,8 @@
 export type {
   AnalysisEvent,
   AnalysisRun,
+  ChartSpec,
+  ResultSummary,
   RunStep,
   ConversationDetail,
   ConversationSummary,

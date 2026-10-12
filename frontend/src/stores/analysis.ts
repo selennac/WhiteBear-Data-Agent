@@ -34,6 +34,8 @@ export const useAnalysisStore = defineStore('analysis', () => {
       generate_query: '正在生成查询方案…',
       validate_sql: '正在校验 SQL…',
       execute_query: '正在执行只读查询…',
+      build_chart: '正在准备图表…',
+      summarize_result: '正在总结查询结果…',
     }
     if (step)
       return (
@@ -71,6 +73,14 @@ export const useAnalysisStore = defineStore('analysis', () => {
         run.token_usage = event.token_usage
       } else if (event.type === 'sql') run.draft = event.draft
       else if (event.type === 'result') run.result = event.result
+      else if (event.type === 'chart') {
+        run.chart = event.chart
+        run.chart_message = event.chart_message
+      } else if (event.type === 'summary') {
+        run.summary = event.summary
+        run.summary_error = event.summary_error
+        run.summary_prompt_version = event.summary_prompt_version
+      }
     }
   }
 

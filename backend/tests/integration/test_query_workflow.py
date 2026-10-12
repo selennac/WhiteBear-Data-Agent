@@ -376,3 +376,66 @@ def test_follow_up_overrides_and_clarification_survive_restart(
     create_run(config, independent)
     assert independent.input_context.previous is None
     assert independent.input_context.clarification is None
+
+
+@pytest.mark.parametrize("endpoint", ["messages", "messages/stream"])
+def test_chart_and_summary_persist_with_exact_query_results(
+    query_settings: Settings, tmp_path: Path, endpoint: str
+) -> None:
+    from app.schemas.analysis import ResultSummary
+
+    draft = QueryDraft(
+        action="query",
+        sql="""SELECT date_trunc('day', paid_at) AS day,
+        SUM(paid_amount) AS sales FROM whitebear_business.orders
+        WHERE paid_at >= TIMESTAMPTZ '2026-09-11T12:00:00+08:00'
+          AND paid_at < TIMESTAMPTZ '2026-10-11T12:00:00+08:00'
+        GROUP BY 1 ORDER BY 1""",
+        metrics=["paid_sales"],
+        time_range="2026-09-11 至 2026-10-11",
+        chart_intent="line",
+    )
+
+    async def summary(settings, actual_draft, result, schema):
+        assert actual_draft.metrics == ["paid_sales"]
+        assert len(result.rows) > 1 and isinstance(result.rows[0][1], str)
+        return ResultSummary(
+            text=f"本次返回{len(result.rows)}天的实付销售额。",
+            limitations=["按支付时间统计，不扣退款。"],
+        ), {"input_tokens": 7}
+
+    config = query_settings.model_copy(update={"frontend_dist": tmp_path})
+    with (
+        patch("app.agent.graph.generate_draft", return_value=(draft, {"input_tokens": 10})),
+        patch("app.agent.graph.generate_summary", side_effect=summary),
+        TestClient(create_app(config)) as client,
+    ):
+        conversation = client.post("/api/v1/conversations", json={}).json()
+        response = client.post(
+            f"/api/v1/conversations/{conversation['id']}/{endpoint}",
+            json={"question": "销售额按天展示趋势"},
+        )
+        assert response.status_code == 200
+        if endpoint.endswith("stream"):
+            events = [
+                json.loads(line[6:])
+                for line in response.text.splitlines()
+                if line.startswith("data: ")
+            ]
+            run = events[-1]["run"]
+            assert [
+                event["type"] for event in events if event["type"] in {"result", "chart", "summary"}
+            ] == ["result", "chart", "summary"]
+        else:
+            run = response.json()
+        assert run["status"] == "succeeded" and run["chart"]["type"] == "line"
+        assert run["chart"]["x_column"] == 0 and run["chart"]["y_columns"] == [1]
+        assert (
+            run["token_usage"]["input_tokens"] == 17
+            and run["summary_prompt_version"] == "summary-v1"
+        )
+        expected = execute_query(config, draft.sql, get_schema(config))
+        assert run["result"]["rows"] == expected.rows
+    with TestClient(create_app(config)) as client:
+        assert client.get(f"/api/v1/runs/{run['id']}").json() == run
+        assert client.get(f"/api/v1/conversations/{conversation['id']}").json()["runs"] == [run]

@@ -1,6 +1,7 @@
 """Per-app run ownership for the local, single-process workspace."""
 
 import asyncio
+import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from uuid import UUID
@@ -40,9 +41,13 @@ class ActiveRun:
             if event is None:
                 return
             sequence += 1
+            payload = event.model_dump(mode="json", exclude_none=True)
+            if event.run is not None:
+                # Full run snapshots must match GET /runs, including optional null fields.
+                payload["run"] = event.run.model_dump(mode="json")
             yield (
                 f"id: {self.run.id}/{sequence}\nevent: {event.type}\n"
-                f"data: {event.model_dump_json(exclude_none=True)}\n\n"
+                f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
             )
 
 

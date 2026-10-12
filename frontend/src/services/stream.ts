@@ -5,6 +5,8 @@ const eventTypes = new Set([
   'node_status',
   'sql',
   'result',
+  'chart',
+  'summary',
   'run_completed',
   'stream_error',
 ])

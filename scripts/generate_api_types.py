@@ -52,7 +52,13 @@ def generate() -> str:
         required = schema.get("required", [])
         for field, value in schema["properties"].items():
             optional = "" if field in required else "?"
-            lines.append(f"  {field}{optional}: {ts_type(value)}")
+            field_type = ts_type(value)
+            declaration = f"  {field}{optional}: {field_type}"
+            if len(declaration) > 100 and "enum" in value:
+                lines.append(f"  {field}{optional}:")
+                lines.extend(f"    | {ts_type({'const': item})}" for item in value["enum"])
+            else:
+                lines.append(declaration)
         lines.extend(["}", ""])
     return "\n".join(lines)
 

@@ -15,7 +15,7 @@ from app.datasources.validation import ALLOWED_FUNCTIONS
 from app.schemas.analysis import ConversationContext, QueryDraft
 from app.schemas.datasource import DatasourceSchema
 
-PROMPT_VERSION = "query-v2"
+PROMPT_VERSION = "query-v3"
 SYSTEM_PROMPT = """你是 PostgreSQL 电商问数助手。只输出 QueryDraft JSON 对象。
 只查询当前上下文提供的业务表和字段。生成单条只读 SELECT；允许 JOIN、CTE、
 聚合、窗口函数，禁止写入、锁、系统表以及未允许的函数。SQL 使用完整 Schema 表名。
@@ -26,6 +26,10 @@ SYSTEM_PROMPT = """你是 PostgreSQL 电商问数助手。只输出 QueryDraft J
 销售额不扣退款，按支付时间统计且排除未支付订单；金额保留数值类型。
 metrics 仅填写上下文提供的指标 ID。如果关键指标、实体或时间口径存在歧义，action=clarify，
 填写 clarification，sql 为空。否则 action=query，填写 sql、metrics、time_range、assumptions。
+chart_intent 表示展示意图：时间趋势 line、分类比较 bar、明确占比 pie、仅表格 table，其他 auto。
+时间分组保留 date/timestamp 类型；金额保留 numeric 类型，不格式化为带单位的文本。
+明确占比且选择 pie 时只返回一个分类及一个可加的数值指标，图表据此计算占比。
+用户同时要求多个数值指标时用 bar，不将客单价、比率等不可加指标用于饼图。
 不输出 Markdown，不编造不存在的结构。修复请求也必须遵守以上规则。
 
 conversation_context 只包含本会话最近成功方案 previous 和成功之后最近待澄清方案 clarification。

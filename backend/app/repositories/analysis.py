@@ -158,7 +158,9 @@ def save_run(settings: Settings, run: AnalysisRun) -> None:
             if run.draft and run.status == "clarification_required":
                 content = run.draft.clarification
             elif run.result:
-                content = f"查询返回 {run.result.row_count} 行。"
+                content = (
+                    run.summary.text if run.summary else f"查询返回 {run.result.row_count} 行。"
+                )
             session.add(
                 Message(
                     id=uuid4(),

@@ -180,3 +180,39 @@ it('keeps the latest valid continuation when viewing an older result or a failed
   expect(view.get('.output-heading').text()).toContain('旧问题')
   view.unmount()
 })
+
+it('restores summaries from history, escapes text and retains tables after summary failure', async () => {
+  const pinia = createPinia()
+  const view = mount(AnalysisView, { global: { plugins: [pinia] } })
+  await flushPromises()
+  const state = useAnalysisStore(pinia)
+  const run: AnalysisRun = {
+    id: 'summary-run',
+    conversation_id: 'conversation-1',
+    question: '销售额',
+    status: 'succeeded',
+    created_at: '2026-10-12T12:00:00+08:00',
+    reference_time: '2026-10-12T12:00:00+08:00',
+    result: {
+      columns: [{ name: 'sales', data_type: 'numeric' }],
+      rows: [['123.45']],
+      row_count: 1,
+      truncated: false,
+      elapsed_ms: 1,
+    },
+    summary: {
+      text: '<script>unsafe</script>销售额为123.45。',
+      limitations: ['只依据已返回数据。'],
+    },
+  }
+  state.selectedRun = run
+  await flushPromises()
+  expect(view.get('[aria-label="结果总结"]').text()).toContain('销售额为123.45')
+  expect(view.get('[aria-label="结果总结"]').find('script').exists()).toBe(false)
+  expect(view.get('td').text()).toBe('123.45')
+  state.selectedRun = { ...run, summary: null, summary_error: '总结超过30秒，查询结果已保留。' }
+  await flushPromises()
+  expect(view.get('[aria-label="结果总结"]').text()).toContain('查询结果已保留')
+  expect(view.get('td').text()).toBe('123.45')
+  view.unmount()
+})

@@ -1,10 +1,12 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import QueryResultTable from '../components/QueryResultTable.vue'
+
 import BaseButton from '../components/ui/BaseButton.vue'
 import { useAnalysisStore } from '../stores/analysis'
 
+const QueryResultChart = defineAsyncComponent(() => import('../components/QueryResultChart.vue'))
 const analysis = useAnalysisStore()
 const question = ref('')
 const examples = [
@@ -42,6 +44,8 @@ const nodeLabel: Record<string, string> = {
   generate_query: '生成查询方案',
   validate_sql: '校验 SQL',
   execute_query: '执行只读查询',
+  build_chart: '准备图表',
+  summarize_result: '总结查询结果',
 }
 onMounted(() => void analysis.loadHistory())
 onBeforeUnmount(() => analysis.disconnect())
@@ -225,6 +229,28 @@ function newAnalysis() {
             {{ assumption }}
           </li>
         </ul>
+        <section
+          v-if="run.summary || run.summary_error"
+          class="result-summary"
+          aria-label="结果总结"
+        >
+          <h3>结果总结</h3>
+          <p v-if="run.summary" class="summary-text">{{ run.summary.text }}</p>
+          <p v-else class="muted" role="status">{{ run.summary_error }}</p>
+          <ul v-if="run.summary?.limitations?.length" class="summary-limitations">
+            <li v-for="(limitation, index) in run.summary.limitations" :key="index">
+              {{ limitation }}
+            </li>
+          </ul>
+        </section>
+        <QueryResultChart
+          v-if="run.result && run.chart"
+          :key="run.id"
+          :result="run.result"
+          :spec="run.chart"
+          :message="run.chart_message"
+        />
+        <p v-else-if="run.result && run.chart_message" class="muted">{{ run.chart_message }}</p>
         <QueryResultTable v-if="run.result" :result="run.result" />
         <details v-if="run.draft?.sql" class="sql" open>
           <summary>SQL</summary>
@@ -251,6 +277,9 @@ function newAnalysis() {
               run.schema_version?.slice(0, 12)
             }}
           </p>
+          <p v-if="run.summary_prompt_version" class="muted">
+            总结提示词：{{ run.summary_prompt_version }}
+          </p>
           <p v-if="Object.keys(run.token_usage ?? {}).length" class="muted">
             Token 用量：{{
               Object.entries(run.token_usage ?? {})
@@ -265,6 +294,27 @@ function newAnalysis() {
 </template>
 
 <style scoped>
+.result-summary {
+  margin-bottom: 24px;
+  padding: 20px;
+  background: var(--color-background);
+  border-radius: var(--radius-sm);
+}
+.result-summary h3 {
+  margin: 0 0 12px;
+  font-size: 15px;
+}
+.summary-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.8;
+}
+.summary-limitations {
+  padding-left: 20px;
+  color: var(--color-muted);
+  font-size: 12px;
+  line-height: 1.7;
+}
 .analysis-layout {
   display: grid;
   grid-template-columns: 240px minmax(0, 1fr);

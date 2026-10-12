@@ -57,12 +57,25 @@ def test_stream_orders_progress_and_only_completes_after_save(tmp_path: Path) ->
         ]
         assert statuses == [
             (node, status)
-            for node in ["load_context", "generate_query", "validate_sql", "execute_query"]
+            for node in [
+                "load_context",
+                "generate_query",
+                "validate_sql",
+                "execute_query",
+                "build_chart",
+                "summarize_result",
+            ]
             for status in ["running", "succeeded"]
         ]
         assert any(e["type"] == "sql" for e in events)
         assert any(e["type"] == "result" for e in events)
-        assert len(events[-1]["run"]["steps"]) == 4
+        assert len(events[-1]["run"]["steps"]) == 6
+        assert [e["type"] for e in events if e["type"] in {"result", "chart", "summary"}] == [
+            "result",
+            "chart",
+            "summary",
+        ]
+        assert events[-1]["run"]["summary"]["text"]
 
 
 def test_stream_preflight_errors_remain_http_errors(tmp_path: Path) -> None:

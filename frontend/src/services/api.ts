@@ -49,7 +49,7 @@ export const sendQuestion = (id: string, question: string) =>
   request<AnalysisRun>(
     `/conversations/${id}/messages`,
     { method: 'POST', body: JSON.stringify({ question }) },
-    240000,
+    300000,
   )
 
 export async function getHealth(): Promise<HealthResponse> {
@@ -92,7 +92,7 @@ export async function streamQuestion(
     method: 'POST',
     headers: { Accept: 'text/event-stream', 'Content-Type': 'application/json' },
     body: JSON.stringify({ question }),
-    signal: AbortSignal.any([signal, AbortSignal.timeout(240000)]),
+    signal: AbortSignal.any([signal, AbortSignal.timeout(300000)]),
   })
   if (!response.ok) {
     const payload: unknown = await response.json().catch(() => null)
