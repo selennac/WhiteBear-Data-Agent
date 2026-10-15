@@ -4,6 +4,8 @@
 
 A local TextToSQL workspace for learning and open-source demos, built with FastAPI, LangGraph, PostgreSQL, and Vue 3.
 
+![WhiteBearDataAgent 问数工作台：对话、结果总结与图表](docs/images/query-workspace.png)
+
 ## 当前状态
 
 当前已完成工程基础、数据准备和多轮问数闭环：
