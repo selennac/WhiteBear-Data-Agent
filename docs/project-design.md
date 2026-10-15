@@ -22,7 +22,7 @@
 | 图表 | vue-echarts | 分析结果可视化 |
 | 后端 | FastAPI、Pydantic | 异步接口与数据契约 |
 | Agent | LangGraph、LangChain | 状态编排、模型适配、结构化输出 |
-| 模型 | 通义千问 `qwen3.7-plus` | 查询生成、问题澄清、结果总结 |
+| 模型 | DeepSeek `deepseek-flash` | 查询生成、问题澄清、结果总结 |
 | 数据访问 | SQLAlchemy 2、psycopg 3、Alembic | 应用持久化、业务查询、迁移 |
 | SQL 校验 | SQLGlot | PostgreSQL SQL 解析与结构检查 |
 | 存储 | PostgreSQL | 会话、运行记录、业务数据 |
@@ -213,7 +213,7 @@ Pydantic 定义主要契约，通过 OpenAPI 生成前端类型：
 
 首次运行流程：
 
-1. 安装运行环境，复制示例配置并填写数据库连接及 Qwen API Key。
+1. 安装运行环境，复制示例配置并填写数据库连接及 DeepSeek API Key。
 2. 安装前后端依赖。
 3. 运行初始化命令，创建数据库、访问账号、应用表和 checkpoint 表。
 4. 运行业务数据生成命令。
@@ -250,7 +250,7 @@ README 同时提供 Windows PowerShell 和 Linux/macOS 的安装、初始化及�
 
 SQL 评测按查询结果比较正确性，首版目标为达到 90%。评测固定参考时间、数据种子、Schema 和提示词版本。
 
-日常 CI 使用模型桩验证工程行为；真实 Qwen 评测由配置 API Key 的开发者手动运行。
+日常 CI 使用模型桩验证工程行为；真实 DeepSeek 评测由配置 API Key 的开发者手动运行。
 
 ### 交付顺序
 
@@ -261,4 +261,4 @@ SQL 评测按查询结果比较正确性，首版目标为达到 90%。评测固
 | 第三阶段：产品体验 | SSE、多轮追问、澄清、图表、总结和执行轨迹 | 完整流程可演示，异常状态可理解 |
 | 第四阶段：开源交付 | 评测报告、CI、截图、架构说明和贡献指南 | 新用户按 README 能完成首次问数 |
 
-默认采用 MIT 许可证，提供中文 README 和英文项目简介。首版范围为本地单用户、PostgreSQL、单次查询与有限纠错；使用者自备通义千问 API Key。
+默认采用 MIT 许可证，提供中文 README 和英文项目简介。首版范围为本地单用户、PostgreSQL、单次查询与有限纠错；使用者自备 DeepSeek API Key。

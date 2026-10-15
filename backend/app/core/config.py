@@ -26,9 +26,9 @@ class Settings(BaseSettings):
     # Administrative and business-owner credentials are only used by the CLI.
     admin_database_url: SecretStr | None = None
     business_database_url: SecretStr | None = None
-    qwen_model: str = "qwen3.7-plus"
-    qwen_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    qwen_api_key: SecretStr | None = None
+    deepseek_model: str = "deepseek-flash"
+    deepseek_base_url: str = "https://api.deepseek.com"
+    deepseek_api_key: SecretStr | None = None
     # Bounded per-call model budgets; worst case 3x query + summary stays under the 300s cap.
     llm_query_timeout_seconds: float = 60
     llm_summary_timeout_seconds: float = 90

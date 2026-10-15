@@ -12,7 +12,7 @@ dependencies = [
     "fastapi",
     "httpx",
     "langchain",
-    "langchain-openai",
+    "langchain-deepseek",
     "langgraph",
     "langgraph-checkpoint-postgres",
     "openai",

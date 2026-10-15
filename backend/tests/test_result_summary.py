@@ -23,11 +23,11 @@ def test_summary_sends_bounded_samples_exact_statistics_and_no_credentials() -> 
     query_result = grouped(rows, truncated=True)
     settings = Settings(
         _env_file=None,
-        qwen_api_key=SecretStr("private-key"),
+        deepseek_api_key=SecretStr("private-key"),
         app_database_url=SecretStr("postgresql+psycopg://a:private-password@host/app"),
     )
     draft = QueryDraft(action="query", sql="SELECT secret_sql", time_range="最近30天")
-    with patch("app.llm.summary.ChatOpenAI") as model:
+    with patch("app.llm.summary.ChatDeepSeek") as model:
         invoke = AsyncMock(
             return_value={
                 "parsed": SummaryNarrative(text="已返回100行，结果已截断。"),
@@ -54,7 +54,7 @@ def test_long_sample_cells_are_clipped_and_empty_result_needs_no_model() -> None
     draft = QueryDraft(action="query", sql="SELECT 1")
     context = summary_context(draft, grouped([["x" * 5000, "1"]]), schema())
     assert len(context["result_sample"][0][0]) == 200 and context["sample_clipped"] is True
-    with patch("app.llm.summary.ChatOpenAI") as model:
+    with patch("app.llm.summary.ChatDeepSeek") as model:
         summary, usage = asyncio.run(
             generate_summary(Settings(_env_file=None), draft, grouped([]), schema())
         )
@@ -68,7 +68,7 @@ def test_long_sample_cells_are_clipped_and_empty_result_needs_no_model() -> None
 
 @pytest.mark.parametrize("invalid", [False, True])
 def test_summary_failures_are_sanitized(invalid: bool) -> None:
-    with patch("app.llm.summary.ChatOpenAI") as model:
+    with patch("app.llm.summary.ChatDeepSeek") as model:
         model.return_value.with_structured_output.return_value.ainvoke = AsyncMock(
             return_value={"parsed": None},
             side_effect=None
@@ -78,7 +78,7 @@ def test_summary_failures_are_sanitized(invalid: bool) -> None:
         with pytest.raises(ModelError) as error:
             asyncio.run(
                 generate_summary(
-                    Settings(_env_file=None, qwen_api_key=SecretStr("private")),
+                    Settings(_env_file=None, deepseek_api_key=SecretStr("private")),
                     QueryDraft(action="query", sql="SELECT 1"),
                     result(),
                     schema(),
@@ -161,7 +161,7 @@ def test_stop_during_summary_closes_call_and_preserves_completed_query() -> None
             patch("app.agent.graph.generate_summary", side_effect=slow_summary),
         ):
             active = await manager.start(
-                Settings(_env_file=None, qwen_api_key=SecretStr("stub")),
+                Settings(_env_file=None, deepseek_api_key=SecretStr("stub")),
                 initial_run().conversation_id,
                 "分类销售额",
             )

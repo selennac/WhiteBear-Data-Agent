@@ -134,7 +134,7 @@ def query_settings(query_database_settings: Settings) -> Settings:
             orders=1500,
         ),
     )
-    return query_database_settings.model_copy(update={"qwen_api_key": SecretStr("model-stub")})
+    return query_database_settings.model_copy(update={"deepseek_api_key": SecretStr("model-stub")})
 
 
 def test_delete_rolls_back_all_records_on_database_failure(
@@ -569,7 +569,7 @@ def test_chart_and_summary_persist_with_exact_query_results(
         assert run["chart"]["x_column"] == 0 and run["chart"]["y_columns"] == [1]
         assert (
             run["token_usage"]["input_tokens"] == 17
-            and run["summary_prompt_version"] == "summary-v1"
+            and run["summary_prompt_version"] == "summary-v3"
         )
         expected = execute_query(config, draft.sql, get_schema(config))
         assert run["result"]["rows"] == expected.rows

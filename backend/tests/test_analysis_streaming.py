@@ -20,7 +20,7 @@ from app.services.streaming import RunBusyError, RunManager
 
 
 def config() -> Settings:
-    return Settings(_env_file=None, qwen_api_key=SecretStr("stub"))
+    return Settings(_env_file=None, deepseek_api_key=SecretStr("stub"))
 
 
 def parse_events(source: str) -> list[dict]:
@@ -80,7 +80,7 @@ def test_stream_orders_progress_and_only_completes_after_save(tmp_path: Path) ->
 
 def test_stream_preflight_errors_remain_http_errors(tmp_path: Path) -> None:
     with TestClient(
-        create_app(Settings(_env_file=None, frontend_dist=tmp_path, qwen_api_key=None))
+        create_app(Settings(_env_file=None, frontend_dist=tmp_path, deepseek_api_key=None))
     ) as client:
         response = client.post(
             f"/api/v1/conversations/{uuid4()}/messages/stream", json={"question": "订单数"}

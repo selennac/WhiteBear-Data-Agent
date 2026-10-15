@@ -47,7 +47,7 @@ def main() -> None:
                     "business_readonly_database_configured": (
                         settings.business_readonly_database_url is not None
                     ),
-                    "model_configured": settings.qwen_api_key is not None,
+                    "model_configured": settings.deepseek_api_key is not None,
                 },
                 ensure_ascii=False,
                 indent=2,

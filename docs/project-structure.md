@@ -15,7 +15,7 @@
 | `app/agent` | 图状态、路由与 LangGraph 编排 |
 | `app/agent/nodes` | 调用服务完成上下文加载、生成、校验、执行、总结 |
 | `app/datasources` | 业务库结构发现、SQLGlot 校验、只读查询 |
-| `app/llm` | Qwen/LangChain 适配和结构化输出 |
+| `app/llm` | DeepSeek/LangChain 适配和结构化输出 |
 | `app/db` | 应用库连接、SQLAlchemy Base 与模型 |
 | `app/repositories` | 应用数据持久化，供服务调用 |
 | `app/business` | 业务数据生成，供 CLI 调用 |
@@ -25,9 +25,9 @@
 
 当前 API 包含 `GET /api/v1/health`、数据源列表、结构读取、同步和业务说明修改；`/docs`、`/redoc` 和 `/openapi.json` 由 FastAPI 提供。会话创建、历史列表、问题提交和运行记录查询接口已注册；原有 JSON 接口保留，流式提交及取消接口已接入，JSON 与 SSE 共用会话占用标记；应用生命周期管理运行任务及退出清理。结构访问只读扫描六张允许的电商业务表，应用侧 `datasource_metadata` 保存快照和说明，业务库注释不被修改。
 
-`app/repositories/analysis.py` 在创建运行时保存显式指定的来源或最近有效方案的上下文快照，也负责事务删除会话、消息与运行。`app/llm/query.py` 使用 `query-v4` 提示词解析继承和覆盖，`app/agent/graph.py` 校验上下文来源、指标与 SQL；历史上下文无需 checkpoint 恢复，也不向模型发送结果行。新增契约保存在现有 JSONB 载荷中，兼容旧记录。
+`app/repositories/analysis.py` 在创建运行时保存显式指定的来源或最近有效方案的上下文快照，也负责事务删除会话、消息与运行。`app/llm/query.py` 使用 `query-v5` 提示词解析继承和覆盖，`app/agent/graph.py` 校验上下文来源、指标与 SQL；历史上下文无需 checkpoint 恢复，也不向模型发送结果行。新增契约保存在现有 JSONB 载荷中，兼容旧记录。
 
-`app/services/presentation.py` 根据实际返回类型构建受约束图表，并用十进制计算返回行统计；`app/llm/summary.py` 使用独立的 `summary-v1` 提示词、有限行样本和指标口径生成纯文本总结。图表、总结及降级提示通过 SSE 发布，在现有运行 JSONB 中保存；总结失败不触发 SQL 重试。
+`app/services/presentation.py` 根据实际返回类型构建受约束图表，并用十进制计算返回行统计；`app/llm/summary.py` 使用独立的 `summary-v3` 提示词、有限行样本和指标口径生成纯文本总结。图表、总结及降级提示通过 SSE 发布，在现有运行 JSONB 中保存；总结失败不触发 SQL 重试。
 
 `app/db/initialize.py` 通过独立管理连接创建数据库与账号，随后迁移应用模型、初始化 checkpoint，并由业务属主账号创建标记过的 `whitebear_business` Schema。`app/business/generator.py` 是无需数据库的纯生成器；`storage.py` 使用事务和 advisory lock 保护生成与受控重置。
 

@@ -1,4 +1,4 @@
-"""Qwen adapter with bounded conversation context and no result rows or credentials."""
+"""DeepSeek adapter with bounded conversation context and no result rows or credentials."""
 
 import json
 from datetime import datetime
@@ -6,7 +6,7 @@ from typing import Any
 
 import httpx
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
+from langchain_deepseek import ChatDeepSeek
 from openai import APITimeoutError, AuthenticationError, RateLimitError
 from pydantic import ValidationError
 
@@ -15,7 +15,7 @@ from app.datasources.validation import ALLOWED_FUNCTIONS
 from app.schemas.analysis import ConversationContext, QueryDraft
 from app.schemas.datasource import DatasourceSchema
 
-PROMPT_VERSION = "query-v4"
+PROMPT_VERSION = "query-v5"
 SYSTEM_PROMPT = """你是 PostgreSQL 电商问数助手。只输出 QueryDraft JSON 对象。
 只查询当前上下文提供的业务表和字段。生成单条只读 SELECT；允许 JOIN、CTE、
 聚合、窗口函数，禁止写入、锁、系统表以及未允许的函数。SQL 使用完整 Schema 表名。
@@ -54,6 +54,10 @@ time_range（含绝对边界和时区）、filters（全部有效筛选条件，
 group_by（全部有效分组）和 assumptions（口径与假设）。
 SQL 必须与这些完整条件一致，不只列出本轮改动。action=clarify 时也保留已确定的条件。
 历史 SQL 仅供理解，必须按当前 Schema 和允许函数重新校验，不沿用不存在的字段或指标。
+JSON 格式示例（具体内容必须依据当前问题和上下文，不可照抄）：
+{"action":"clarify","sql":"","metrics":[],"time_range":"","assumptions":[],
+"clarification":"请明确要统计的指标。","context_mode":"new","resolved_question":"统计业务指标",
+"filters":[],"group_by":[],"chart_intent":"auto"}
 """
 
 
@@ -72,8 +76,8 @@ async def generate_draft(
     diagnostic: str = "",
     conversation_context: ConversationContext | None = None,
 ) -> tuple[QueryDraft, dict[str, int]]:
-    if settings.qwen_api_key is None:
-        raise ModelError("model_unconfigured", "请在 backend/.env 配置 QWEN_API_KEY。")
+    if settings.deepseek_api_key is None:
+        raise ModelError("model_unconfigured", "请在 backend/.env 配置 DEEPSEEK_API_KEY。")
     context: dict[str, Any] = {
         "question": question,
         "reference_time": reference_time.isoformat(),
@@ -95,15 +99,16 @@ async def invoke_draft(
     settings: Settings, context: dict[str, Any], client: httpx.AsyncClient
 ) -> tuple[QueryDraft, dict[str, int]]:
     timeout = settings.llm_query_timeout_seconds
-    model = ChatOpenAI(
-        model=settings.qwen_model,
-        base_url=settings.qwen_base_url,
-        api_key=settings.qwen_api_key,
+    model = ChatDeepSeek(
+        model=settings.deepseek_model,
+        base_url=settings.deepseek_base_url,
+        api_key=settings.deepseek_api_key,
         http_async_client=client,
         temperature=0,
         timeout=timeout,
         max_retries=0,
-        max_completion_tokens=4096,
+        max_tokens=4096,
+        extra_body={"thinking": {"type": "disabled"}},
     )
     try:
         response = await model.with_structured_output(
@@ -116,6 +121,8 @@ async def invoke_draft(
                 HumanMessage(content=json.dumps(context, ensure_ascii=False)),
             ]
         )
+        if not isinstance(response, dict):
+            raise ModelError("model_output_invalid", "模型未返回有效查询方案，请重试。")
         draft = response.get("parsed")
         if not isinstance(draft, QueryDraft):
             raise ModelError("model_output_invalid", "模型未返回有效查询方案，请重试。")
@@ -129,7 +136,7 @@ async def invoke_draft(
         raise ModelError("model_timeout", f"模型响应超过 {timeout:g} 秒，请稍后重试。") from None
     except AuthenticationError:
         raise ModelError(
-            "model_authentication_failed", "模型认证失败，请检查 QWEN_API_KEY。"
+            "model_authentication_failed", "模型认证失败，请检查 DEEPSEEK_API_KEY。"
         ) from None
     except RateLimitError:
         raise ModelError("model_rate_limited", "模型请求受限，请检查额度或稍后重试。") from None

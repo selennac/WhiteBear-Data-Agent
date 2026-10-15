@@ -290,13 +290,13 @@ function restoreDeleteFocus(event: Event) {
                 class="summary-text"
                 :class="{
                   'compact-summary':
-                    item.summary.text.length > 140 && !expandedSummaries.has(item.id),
+                    item.summary.text.length > 300 && !expandedSummaries.has(item.id),
                 }"
               >
                 {{ item.summary.text }}
               </p>
               <button
-                v-if="item.summary && item.summary.text.length > 140"
+                v-if="item.summary && item.summary.text.length > 300"
                 type="button"
                 class="summary-toggle"
                 :aria-expanded="expandedSummaries.has(item.id)"

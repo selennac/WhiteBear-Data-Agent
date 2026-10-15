@@ -41,8 +41,8 @@ def test_provider_failures_are_specific_and_do_not_expose_credentials(kind: str)
             body={"secret": "private"},
         ),
     }
-    settings = Settings(_env_file=None, qwen_api_key=SecretStr("private"))
-    with patch("app.llm.query.ChatOpenAI") as model:
+    settings = Settings(_env_file=None, deepseek_api_key=SecretStr("private"))
+    with patch("app.llm.query.ChatDeepSeek") as model:
         model.return_value.with_structured_output.return_value.ainvoke = AsyncMock(
             side_effect=errors[kind]
         )
@@ -64,12 +64,12 @@ def test_provider_failures_are_specific_and_do_not_expose_credentials(kind: str)
 def test_only_question_and_schema_context_are_sent_and_token_usage_is_kept() -> None:
     settings = Settings(
         _env_file=None,
-        qwen_api_key=SecretStr("private-key"),
+        deepseek_api_key=SecretStr("private-key"),
         app_database_url=SecretStr("postgresql+psycopg://account:private-password@host/app"),
     )
     now = datetime.fromisoformat("2026-10-11T12:00:00+08:00")
     draft = QueryDraft(action="query", sql="SELECT 1")
-    with patch("app.llm.query.ChatOpenAI") as model:
+    with patch("app.llm.query.ChatDeepSeek") as model:
         invoke = AsyncMock()
         model.return_value.with_structured_output.return_value.ainvoke = invoke
         invoke.return_value = {
@@ -108,8 +108,8 @@ def test_follow_up_context_is_sent_without_credentials_or_result_rows() -> None:
         }
     )
     conversation = ConversationContext(previous=previous, clarification=pending)
-    settings = Settings(_env_file=None, qwen_api_key=SecretStr("private"))
-    with patch("app.llm.query.ChatOpenAI") as model:
+    settings = Settings(_env_file=None, deepseek_api_key=SecretStr("private"))
+    with patch("app.llm.query.ChatDeepSeek") as model:
         invoke = AsyncMock(return_value={"parsed": QueryDraft(action="query", sql="SELECT 1")})
         model.return_value.with_structured_output.return_value.ainvoke = invoke
         asyncio.run(

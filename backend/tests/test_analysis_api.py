@@ -16,7 +16,7 @@ from app.services.analysis import analyze
 
 
 def test_request_validation_and_unconfigured_model(tmp_path: Path) -> None:
-    settings = Settings(_env_file=None, frontend_dist=tmp_path, qwen_api_key=None)
+    settings = Settings(_env_file=None, frontend_dist=tmp_path, deepseek_api_key=None)
     path = f"/api/v1/conversations/{uuid4()}/messages"
     with TestClient(create_app(settings)) as client:
         assert client.post(path, json={"question": "   "}).status_code == 422
@@ -25,7 +25,7 @@ def test_request_validation_and_unconfigured_model(tmp_path: Path) -> None:
         assert client.get("/api/v1/runs/invalid-uuid").status_code == 422
         response = client.post(path, json={"question": "订单数"})
         assert response.status_code == 503
-        assert "QWEN_API_KEY" in response.json()["detail"]
+        assert "DEEPSEEK_API_KEY" in response.json()["detail"]
 
 
 def test_history_errors_are_safe(tmp_path: Path) -> None:
@@ -43,7 +43,7 @@ def test_history_errors_are_safe(tmp_path: Path) -> None:
 
 
 def test_unexpected_graph_failure_is_saved_without_credentials() -> None:
-    settings = Settings(_env_file=None, qwen_api_key=SecretStr("private"))
+    settings = Settings(_env_file=None, deepseek_api_key=SecretStr("private"))
     with (
         patch("app.services.analysis.create_run") as create,
         patch("app.services.analysis.run_graph", side_effect=RuntimeError("password=private")),
@@ -81,7 +81,7 @@ def test_run_response_contract(tmp_path: Path) -> None:
 
 
 def test_json_and_stream_share_the_same_conversation_reservation(tmp_path: Path) -> None:
-    app = create_app(Settings(_env_file=None, frontend_dist=tmp_path, qwen_api_key=None))
+    app = create_app(Settings(_env_file=None, frontend_dist=tmp_path, deepseek_api_key=None))
     conversation_id = uuid4()
     with TestClient(app) as client:
         app.state.runs.reserve(conversation_id)

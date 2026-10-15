@@ -14,8 +14,8 @@ from app.schemas.analysis import AnalysisRun
 def new_run(
     settings: Settings, conversation_id: UUID, question: str, context_run_id: UUID | None = None
 ) -> AnalysisRun:
-    if settings.qwen_api_key is None:
-        raise ModelError("model_unconfigured", "请在 backend/.env 配置 QWEN_API_KEY。")
+    if settings.deepseek_api_key is None:
+        raise ModelError("model_unconfigured", "请在 backend/.env 配置 DEEPSEEK_API_KEY。")
     now = datetime.now(ZoneInfo("Asia/Shanghai"))
     return AnalysisRun(
         id=uuid4(),
@@ -25,7 +25,7 @@ def new_run(
         created_at=now,
         reference_time=now,
         prompt_version=PROMPT_VERSION,
-        model=settings.qwen_model,
+        model=settings.deepseek_model,
         context_run_id=context_run_id,
     )
 
